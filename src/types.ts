@@ -228,7 +228,7 @@ export interface FinancialContext {
     name: string;
     email: string;
     occupation: string;
-    syntheticFlag: true;
+    syntheticFlag?: boolean;
   };
   availableCash: number | null;
   selectedBank: Institution;

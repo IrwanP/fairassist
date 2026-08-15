@@ -676,7 +676,9 @@ Tell me what you need help with, or add a repayment notice. I’ll help you unde
         } else if (isSlikOrReport) {
           textContent = "Your OJK SLIK credit-report evidence has been added. It shows 3 active facilities, collectibility status 1 – Lancar, and no current arrears.";
         } else {
-          textContent = `Thanks, Ayu. I’ve added your ${instName} repayment of ${formattedAmt} due on ${formattedDueDate}.\n\nDo you have another repayment obligation or salary information to add?`;
+          textContent = isDemoScenario
+            ? `Thanks, Ayu. I’ve added your ${instName} repayment of ${formattedAmt} due on ${formattedDueDate}.\n\nDo you have another repayment obligation or salary information to add?`
+            : `I’ve added your ${instName} repayment of ${formattedAmt} due on ${formattedDueDate}.\n\nDo you have another repayment obligation or salary information to add?`;
         }
 
         const confirmAgentMsg: ChatMessage = {
@@ -1419,6 +1421,7 @@ Tell me what you need help with, or add a repayment notice. I’ll help you unde
           activeTab={activeTab}
           setActiveTab={setActiveTab}
           onOpenFreshnessModal={() => setIsFreshnessModalOpen(true)}
+          isDemoScenario={isDemoScenario}
           sourceStatus={
             isAnalyzing || isChatSending
               ? 'checking'

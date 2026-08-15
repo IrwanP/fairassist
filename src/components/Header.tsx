@@ -6,6 +6,7 @@ interface HeaderProps {
   setActiveTab: (tab: 'Overview' | 'Evidence' | 'Rules & Policies' | 'Action Simulator' | 'Action Plan') => void;
   onOpenFreshnessModal: () => void;
   sourceStatus?: 'ready' | 'checking' | 'current' | 'incomplete' | 'newer';
+  isDemoScenario?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -13,6 +14,7 @@ export const Header: React.FC<HeaderProps> = ({
   setActiveTab,
   onOpenFreshnessModal,
   sourceStatus = 'ready',
+  isDemoScenario = false,
 }) => {
   const tabs = [
     'Overview',
@@ -103,9 +105,9 @@ export const Header: React.FC<HeaderProps> = ({
             {/* User Avatar */}
             <div 
               className="w-8 h-8 rounded-full bg-stone-200 flex items-center justify-center text-xs font-bold text-stone-600 border border-stone-300 shrink-0 cursor-default"
-              title="Ayu Putri"
+              title={isDemoScenario ? "Ayu Putri (Demo)" : "Borrower Profile"}
             >
-              AP
+              {isDemoScenario ? "AP" : "FA"}
             </div>
 
           </div>

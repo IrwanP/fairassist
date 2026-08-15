@@ -286,15 +286,15 @@ export const INITIAL_REGULATORY_SOURCES: RegulatorySource[] = [
     sourceType: 'Regulation (POJK)',
     title: 'POJK 22 Tahun 2023 — Pelindungan Konsumen dan Masyarakat di Sektor Jasa Keuangan',
     codeNumber: 'POJK 22 Tahun 2023',
-    publicationDate: '2023-12-20',
-    effectiveDate: '2023-12-20',
+    publicationDate: '2023-12-22',
+    effectiveDate: '2023-12-22',
     lastChecked: 'Today 17:30 WIB',
     status: 'Current',
     officialUrl: 'https://ojk.go.id/id/regulasi/Pages/Pelindungan-Konsumen-dan-Masyarakat-di-Sektor-Jasa-Keuangan.aspx',
     summaryText: 'Statutory framework for financial consumer rights, transparent dispute resolution, and fair treatment.',
     keyClauses: [
-      'Consumers have statutory right to receive clear, accurate information regarding loan terms and repayment choices.',
-      'Financial service providers must maintain clear complaint handling and dispute resolution mechanisms.'
+      'Consumers are entitled to clear, accurate, correct, accessible and non-misleading information about financial products and services.',
+      'Financial services providers must maintain consumer complaint-handling mechanisms and respond to complaints in accordance with applicable requirements.'
     ]
   },
   {
@@ -377,10 +377,10 @@ export const INITIAL_PIPELINE_STATE: AgentActivity = {
 
 export const DEFAULT_FINANCIAL_CONTEXT: FinancialContext = {
   userPersona: {
-    name: 'Ayu Putri',
-    email: 'ayu.putri.demo@fairassist.id',
-    occupation: 'Senior Graphic Designer',
-    syntheticFlag: true
+    name: 'Borrower',
+    email: 'borrower@fairassist.id',
+    occupation: 'Borrower',
+    syntheticFlag: false
   },
   availableCash: null,
   selectedBank: AVAILABLE_BANKS[0],

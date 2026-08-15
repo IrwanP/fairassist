@@ -351,15 +351,15 @@ export function retrieveApplicableRegulations(
           sourceType: 'Regulation (POJK)',
           title: 'POJK 22 Tahun 2023 — Pelindungan Konsumen dan Masyarakat di Sektor Jasa Keuangan',
           codeNumber: 'POJK 22 Tahun 2023',
-          publicationDate: '2023-12-20',
-          effectiveDate: '2023-12-20',
+          publicationDate: '2023-12-22',
+          effectiveDate: '2023-12-22',
           lastChecked: 'Today 17:30 WIB',
           status: 'Current',
           officialUrl: 'https://ojk.go.id/id/regulasi/Pages/Pelindungan-Konsumen-dan-Masyarakat-di-Sektor-Jasa-Keuangan.aspx',
-          summaryText: 'Statutory framework for bank consumer rights, transparent dispute resolution, and fair treatment.',
+          summaryText: 'Statutory framework for financial consumer rights, transparent dispute resolution, and fair treatment.',
           keyClauses: [
-            'Borrowers have statutory right to receive transparent, accurate facility terms and repayment options.',
-            'Banking institutions must maintain accessible complaint channels and fair restructuring pathways.'
+            'Consumers are entitled to clear, accurate, correct, accessible and non-misleading information about financial products and services.',
+            'Financial services providers must maintain consumer complaint-handling mechanisms and respond to complaints in accordance with applicable requirements.'
           ]
         }
       ]

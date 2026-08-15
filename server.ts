@@ -1,7 +1,7 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -9,9 +9,39 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
+// Body parser with size limits
 app.use(express.json({ limit: "10mb" }));
 
-// Initialize Gemini Client
+// In-memory rate limiter per IP address for API endpoints
+interface RateLimitRecord {
+  count: number;
+  resetAt: number;
+}
+const rateLimitStore = new Map<string, RateLimitRecord>();
+
+const apiRateLimiter = (maxRequests = 60, windowMs = 60 * 1000) => {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const ip = req.ip || req.socket.remoteAddress || "unknown-client";
+    const now = Date.now();
+    const record = rateLimitStore.get(ip);
+
+    if (!record || now > record.resetAt) {
+      rateLimitStore.set(ip, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+
+    if (record.count >= maxRequests) {
+      return res.status(429).json({
+        error: "Too many requests. Please try again in a moment.",
+      });
+    }
+
+    record.count += 1;
+    return next();
+  };
+};
+
+// Initialize Gemini Client safely
 const getGeminiClient = () => {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -33,9 +63,15 @@ app.get("/api/health", (_req, res) => {
 });
 
 // 1b. Multimodal Evidence Analysis Endpoint (Gemini Document & Image Parser)
-app.post("/api/analyze-evidence", async (req, res) => {
+app.post("/api/analyze-evidence", apiRateLimiter(30, 60000), async (req, res) => {
   try {
-    const { evidenceId, analysisRequestId, uploadId, fileHash, fileBase64, mimeType, fileName, evidenceType } = req.body;
+    const body = req.body || {};
+    const { evidenceId, analysisRequestId, uploadId, fileHash, fileBase64, mimeType, fileName, evidenceType } = body;
+
+    if (!fileBase64 && !fileName && !evidenceId) {
+      return res.status(400).json({ error: "Missing required evidence payload." });
+    }
+
     const ai = getGeminiClient();
 
     const activeEvId = evidenceId || `ev-custom-${Date.now()}`;
@@ -144,165 +180,78 @@ Return JSON matching this EXACT schema:
           });
         }
       } catch (geminiErr) {
-        console.warn("Gemini multimodal analysis error, falling back to document parser:", geminiErr);
+        console.warn("Gemini multimodal analysis error, falling back to unverified review state:", geminiErr);
       }
     }
 
-    // High quality isolated document parser fallback (when GEMINI_API_KEY is missing or fails)
-    const lowerName = (fileName || "").toLowerCase();
-    const isBca = lowerName.includes("bca") || lowerName.includes("central asia");
-    const isMandiri = lowerName.includes("mandiri");
-    const isEasyCash = lowerName.includes("easycash");
-    const isAdaKami = lowerName.includes("adakami");
-    const isSlik = lowerName.includes("slik") || lowerName.includes("ideb");
-    const isSalary = lowerName.includes("salary") || lowerName.includes("slip") || lowerName.includes("payroll") || lowerName.includes("gaji") || lowerName.includes("nusantara");
-
-    let fallbackCategory = "Other financial evidence";
-    let fallbackInst = "Needs confirmation";
-    let fallbackLegal: string | null = null;
-    let fallbackProd = "Financial Document";
-    let fallbackAmount: number | null = null;
-    let fallbackDate: string | null = null;
-    let fallbackRef: string | null = null;
-    let fallbackTitle = fileName || "Uploaded Financial Document";
-    let fallbackSummary = "An uploaded financial document. Please review and confirm the extracted details.";
-    let fallbackNotes = "Details could not be automatically verified. Please confirm.";
-    let fallbackStatus = "INFORMATIONAL";
-    let fallbackConfidence = "Needs review";
-
-    if (isBca) {
-      fallbackCategory = "Bank repayment notification";
-      fallbackInst = "Bank Central Asia (BCA)";
-      fallbackLegal = "PT Bank Central Asia Tbk";
-      fallbackProd = "Kredit Tanpa Agunan";
-      fallbackAmount = 1200000;
-      fallbackDate = "2026-08-25";
-      fallbackRef = null;
-      fallbackTitle = "BCA Repayment Notice";
-      fallbackSummary = "A BCA repayment notification for a Kredit Tanpa Agunan instalment of Rp1,200,000 due on 25 August 2026.";
-      fallbackNotes = "Repayment notification for BCA Kredit Tanpa Agunan facility.";
-      fallbackStatus = "ACTIVE_OBLIGATION";
-      fallbackConfidence = "High";
-    } else if (isMandiri) {
-      fallbackCategory = "Bank repayment notification";
-      fallbackInst = "Bank Mandiri";
-      fallbackLegal = "PT Bank Mandiri (Persero) Tbk";
-      fallbackProd = "Kredit Tanpa Agunan";
-      fallbackAmount = 1200000;
-      fallbackDate = "2026-08-25";
-      fallbackRef = null;
-      fallbackTitle = "Bank Mandiri Repayment Reminder";
-      fallbackSummary = "A Bank Mandiri repayment notice for a Kredit Tanpa Agunan instalment of Rp1,200,000 due on 25 August 2026.";
-      fallbackNotes = "Repayment notification for Bank Mandiri Kredit Tanpa Agunan facility.";
-      fallbackStatus = "ACTIVE_OBLIGATION";
-      fallbackConfidence = "High";
-    } else if (isEasyCash) {
-      fallbackCategory = "Pindar app repayment screenshot";
-      fallbackInst = "EasyCash (PT Indonesia Fintopia Tech)";
-      fallbackLegal = "PT Indonesia Fintopia Tech";
-      fallbackProd = "LPBBTI Overdue Collection Notice";
-      fallbackAmount = 650000;
-      fallbackDate = "2026-08-24";
-      fallbackRef = "EC-COLLECT-9921";
-      fallbackTitle = "EasyCash Debt Collection Notice";
-      fallbackSummary = "A debt collection notification from EasyCash for an active overdue LPBBTI obligation of Rp650,000.";
-      fallbackNotes = "Debt collection notice from EasyCash. Classification: ACTIVE_OBLIGATION / COLLECTION_NOTICE.";
-      fallbackStatus = "COLLECTION_NOTICE";
-      fallbackConfidence = "High";
-    } else if (isAdaKami) {
-      fallbackCategory = "Pindar app repayment screenshot";
-      fallbackInst = "AdaKami (PT Pembiayaan Digital Indonesia)";
-      fallbackLegal = "PT Pembiayaan Digital Indonesia";
-      fallbackProd = "LPBBTI Short-term Loan";
-      fallbackAmount = 750000;
-      fallbackDate = "2026-08-27";
-      fallbackRef = "ADK-LN-3349102";
-      fallbackTitle = "AdaKami Active Loan Repayment Notice";
-      fallbackSummary = "An AdaKami repayment screen showing Rp750,000 due on 27 August 2026.";
-      fallbackNotes = "Short-term cash advance instalment due before 23:59 WIB.";
-      fallbackStatus = "ACTIVE_OBLIGATION";
-      fallbackConfidence = "High";
-    } else if (isSlik) {
-      fallbackCategory = "iDeb SLIK – Debitur Perseorangan";
-      fallbackInst = "OJK SLIK System";
-      fallbackLegal = "Otoritas Jasa Keuangan";
-      fallbackProd = "iDeb Credit Report";
-      fallbackAmount = 0;
-      fallbackDate = "2026-08-15";
-      fallbackRef = "SLIK-2026-88391";
-      fallbackTitle = "OJK iDeb SLIK Debitur Report";
-      fallbackSummary = "An iDeb SLIK report confirming Collectibility 1 (Current) status with no historic defaults.";
-      fallbackNotes = "Credit quality rating verified as Collectibility 1 (Lancar).";
-      fallbackStatus = "INFORMATIONAL";
-      fallbackConfidence = "High";
-    } else if (isSalary) {
-      fallbackCategory = "Other financial evidence";
-      fallbackInst = "PT Nusantara Digital";
-      fallbackLegal = "PT Nusantara Digital";
-      fallbackProd = "Payroll / Salary Slip";
-      fallbackAmount = 8500000;
-      fallbackDate = "28 Aug 2026";
-      fallbackRef = "PAYROLL-202608";
-      fallbackTitle = "Salary Slip - PT Nusantara Digital";
-      fallbackSummary = "A salary slip from PT Nusantara Digital for Ayu Putri showing Net Salary of Rp8,500,000 paid on 28 Aug 2026.";
-      fallbackNotes = "Net Salary: Rp8,500,000. Payment date: 28 Aug 2026.";
-      fallbackStatus = "INFORMATIONAL";
-      fallbackConfidence = "High";
-    }
-
+    // Honest unverified review state when Gemini is unavailable or fails
+    // Never fabricate arbitrary amounts or institutions based on filename substrings
     return res.json({
       uploadId: activeUploadId,
       fileHash: activeFileHash,
       evidenceId: activeEvId,
       analysisRequestId: activeReqId,
-      category: fallbackCategory,
-      categoryConfidence: fallbackConfidence === "High" ? "High" : "Low",
-      institution: fallbackInst,
-      institutionLegalName: fallbackLegal,
-      product: fallbackProd,
-      title: fallbackTitle,
-      amountDue: fallbackAmount,
-      dueDate: fallbackDate,
-      accountOrFacility: fallbackRef,
-      obligationStatus: fallbackStatus,
-      confidence: fallbackConfidence,
-      summaryStatement: fallbackSummary,
-      extractedNotes: fallbackNotes,
-      uncertainFields: fallbackInst === "Needs confirmation" ? ["institution", "product", "amountDue", "dueDate"] : [],
+      category: "Other financial evidence",
+      categoryConfidence: "Low",
+      institution: "Needs confirmation",
+      institutionLegalName: null,
+      product: "Financial Document",
+      title: fileName ? `Uploaded Evidence (${fileName})` : "Uploaded Financial Document",
+      amountDue: null,
+      dueDate: null,
+      accountOrFacility: null,
+      obligationStatus: "INFORMATIONAL",
+      confidence: "Needs review",
+      summaryStatement: "Gemini analysis could not automatically extract details from this file. Please review and confirm the extracted details manually.",
+      extractedNotes: "Details could not be automatically verified. Please confirm manually.",
+      uncertainFields: ["institution", "product", "amountDue", "dueDate"],
     });
 
   } catch (err: any) {
     console.error("Error in /api/analyze-evidence:", err);
     res.status(500).json({
-      error: "Failed to analyze evidence",
-      message: err.message || "Internal server error",
+      error: "An unexpected error occurred while processing your request.",
     });
   }
 });
 
 // 2. Freshness & Regulatory Sources endpoint
 app.get("/api/sources", (_req, res) => {
-  res.json({
-    lastCheckedAll: new Date().toISOString(),
-    statusSummary: "Sources Current",
-    totalSources: 6,
-    verifiedCurrent: 6
-  });
+  try {
+    const totalSources = 6;
+    res.json({
+      lastCheckedAll: new Date().toISOString(),
+      statusSummary: "Sources Current",
+      totalSources,
+      verifiedCurrent: totalSources,
+    });
+  } catch (err: any) {
+    console.error("Error in /api/sources:", err);
+    res.status(500).json({ error: "An unexpected error occurred while processing your request." });
+  }
 });
 
 // 2b. Link-Health Validation Endpoint
 const ALLOWED_TRUSTED_DOMAINS = [
   'ojk.go.id',
   'www.ojk.go.id',
+  'bi.go.id',
+  'www.bi.go.id',
   'bca.co.id',
   'www.bca.co.id',
+  'bankmandiri.co.id',
+  'www.bankmandiri.co.id',
+  'bri.co.id',
+  'www.bri.co.id',
   'adakami.id',
-  'www.adakami.id'
+  'www.adakami.id',
+  'easycash.id',
+  'www.easycash.id'
 ];
 
 const sourceValidationCache = new Map<string, { valid: boolean; status: number; resolvedUrl: string; checkedAt: string }>();
 
-app.post("/api/validate-sources", async (req, res) => {
+app.post("/api/validate-sources", apiRateLimiter(20, 60000), async (req, res) => {
   try {
     const urls: string[] = req.body?.urls || [
       "https://ojk.go.id/id/kanal/iknb/data-dan-statistik/direktori/fintech/default.aspx",
@@ -344,7 +293,7 @@ app.post("/api/validate-sources", async (req, res) => {
         const timeoutId = setTimeout(() => controller.abort(), 3500);
 
         let statusCode = 200;
-        let isValid = true;
+        let isValid = false;
 
         try {
           const resp = await fetch(urlStr, {
@@ -359,9 +308,8 @@ app.post("/api/validate-sources", async (req, res) => {
           isValid = resp.ok || resp.status === 301 || resp.status === 302 || resp.status === 308;
         } catch (fetchErr) {
           clearTimeout(timeoutId);
-          // If network call timed out or failed due to container sandbox, verify domain validity
-          isValid = isDomainAllowed;
-          statusCode = isDomainAllowed ? 200 : 504;
+          isValid = false;
+          statusCode = 504;
         }
 
         const entry = { valid: isValid, status: statusCode, resolvedUrl: urlStr, checkedAt: new Date().toISOString() };
@@ -384,7 +332,8 @@ app.post("/api/validate-sources", async (req, res) => {
       results
     });
   } catch (err: any) {
-    res.status(500).json({ error: "Failed to validate source links", message: err.message });
+    console.error("Error in /api/validate-sources:", err);
+    res.status(500).json({ error: "An unexpected error occurred while processing your request." });
   }
 });
 
@@ -417,9 +366,9 @@ function getActiveRepaymentEvidence(evidenceList: any[] = []) {
 }
 
 // 3. AI Analysis endpoint (Grounding + Synthesis)
-app.post("/api/analyze", async (req, res) => {
+app.post("/api/analyze", apiRateLimiter(60, 60000), async (req, res) => {
   try {
-    const { financialContext, prompt } = req.body;
+    const { financialContext, prompt } = req.body || {};
     const ai = getGeminiClient();
 
     const evidenceList = getActiveRepaymentEvidence(financialContext?.evidenceList || []);
@@ -482,14 +431,14 @@ Do NOT invent or hallucinate other lenders, institutions, obligations, salaries,
 
 SPECIAL RULE FOR SALARY-ONLY CONTEXT (when salary information is confirmed but active repayment obligations count is 0):
 If salary information exists (or salary evidence is confirmed) and active repayment obligation count is 0:
-1. "quote" MUST state: "No active repayment obligations have been recorded yet. Your salary information is confirmed at Rp8,500,000 on 28 Aug 2026." (substituting user's confirmed salary amount e.g. Rp8,500,000 and date e.g. 28 Aug 2026).
+1. "quote" MUST state: "No active repayment obligations have been recorded yet. Your salary information is confirmed at ${salaryStr}." (substituting user's confirmed salary amount and date).
 2. "summary" MUST state: "I still need your repayment notice(s) and available cash to analyse your cash flow and provide personalised repayment guidance."
 3. "nextBestActions" MUST be an empty array [].
 
 SPECIAL RULE FOR INCOMPLETE CONTEXT (e.g., 1 obligation, no salary date):
 If only 1 repayment obligation exists and NO salary date is confirmed:
 1. Do NOT claim an optimal repayment action or payment prioritisation exists yet.
-2. "quote" MUST state: "Your [institutionName] repayment notice shows [amount] due on [dueDate]." (e.g. "Your AdaKami repayment notice shows Rp750,000 due on 27 August 2026.")
+2. "quote" MUST state: "Your [institutionName] repayment notice shows [amount] due on [dueDate]."
 3. "summary" MUST be: "I still need your other repayment obligations and salary timing before I can calculate a cash-flow gap or recommend which payment to prioritise."
 4. "nextBestActions" MUST contain 1 action:
    - "title": "More context needed"
@@ -501,7 +450,7 @@ If only 1 repayment obligation exists and NO salary date is confirmed:
 SPECIAL RULE FOR MISSING FINANCIAL CONTEXT (when 2+ obligations exist but cash/salary is missing):
 If 2 or more repayment obligations exist but available cash or salary timing is unknown (availableCash is null or nextSalaryDate is null):
 1. Do NOT recommend which obligation to prioritise yet.
-2. "quote" MUST state: "I have both repayments confirmed: BCA — Rp1,200,000 due 25 August, AdaKami — Rp750,000 due 27 August." (or listing the user's actual confirmed obligations).
+2. "quote" MUST state: "I have both repayments confirmed: [list of actual obligations]."
 3. "summary" MUST state: "To compare them against your cash flow, I still need how much cash you have available now, your next salary date, and your expected salary amount."
 4. "nextBestActions" MUST contain 1 action:
    - "title": "Add your cash and salary timing."
@@ -565,9 +514,9 @@ Provide structured analysis in JSON format adhering strictly to this schema:
 
       if (obligations.length === 1 && !nextSalaryDate) {
         const obl = obligations[0];
-        const inst = obl.institutionName || "BCA";
-        const amt = obl.amount ? `Rp${Number(obl.amount).toLocaleString('id-ID')}` : "Rp1,200,000";
-        const dateStr = obl.formattedDate || obl.dueDate || "25 August 2026";
+        const inst = obl.institutionName || "Lender";
+        const amt = obl.amount ? `Rp${Number(obl.amount).toLocaleString('id-ID')}` : "repayment amount";
+        const dateStr = obl.formattedDate || obl.dueDate || "due date";
 
         quote = `Your ${inst} repayment notice shows ${amt} due on ${dateStr}.`;
         summary = `I still need your other repayment obligations and salary timing before I can calculate a cash-flow gap or recommend which payment to prioritise.`;
@@ -652,14 +601,7 @@ Provide structured analysis in JSON format adhering strictly to this schema:
         if (portfolioFundingGap > 0) {
           quote = `Cash-flow gap of Rp${portfolioFundingGap.toLocaleString('id-ID')} identified before your ${nextSalaryDate || 'next'} salary.`;
           
-          summary = `### What I found
-You have Rp${totalPreSalary.toLocaleString('id-ID')} in confirmed repayments due before your Rp${(nextSalaryAmount || 0).toLocaleString('id-ID')} salary arrives on ${nextSalaryDate || 'payday'}. Your confirmed available cash is Rp${cash.toLocaleString('id-ID')}, leaving a temporary Rp${portfolioFundingGap.toLocaleString('id-ID')} portfolio funding gap.${essentialExpenses ? ` (Essential expenses: Rp${essentialExpenses.toLocaleString('id-ID')})` : ' (Essential expenses: Not provided.)'}
-
-### What it means
-${earliestInst} is the first deadline, due ${earliestDateStr}${laterDetails ? `, followed by ${laterDetails}` : ''}. ${individualCoverage ? `Your available cash of Rp${cash.toLocaleString('id-ID')} covers the ${earliestAmtStr} ${earliestInst} obligation individually, but across all pre-salary repayments you face a total portfolio funding gap of Rp${portfolioFundingGap.toLocaleString('id-ID')}.` : `Your available cash of Rp${cash.toLocaleString('id-ID')} is below the ${earliestAmtStr} ${earliestInst} obligation.`} Priority is given to ${earliestInst} based on due-date schedule.
-
-### Next step
-Contact ${earliestInst} before ${earliestDateStr} to ask what repayment arrangements are available. Keep the ${later.length > 0 ? later[0].institutionName : 'subsequent'} payment due on ${later.length > 0 ? (later[0].formattedDate || later[0].dueDate) : 'its due date'} in view. FairAssist can compare repayment scenarios using your confirmed cash position before you decide how to allocate funds.`;
+          summary = `### What I found\nYou have Rp${totalPreSalary.toLocaleString('id-ID')} in confirmed repayments due before your Rp${(nextSalaryAmount || 0).toLocaleString('id-ID')} salary arrives on ${nextSalaryDate || 'payday'}. Your confirmed available cash is Rp${cash.toLocaleString('id-ID')}, leaving a temporary Rp${portfolioFundingGap.toLocaleString('id-ID')} portfolio funding gap.${essentialExpenses ? ` (Essential expenses: Rp${essentialExpenses.toLocaleString('id-ID')})` : ' (Essential expenses: Not provided.)'}\n\n### What it means\n${earliestInst} is the first deadline, due ${earliestDateStr}${laterDetails ? `, followed by ${laterDetails}` : ''}. ${individualCoverage ? `Your available cash of Rp${cash.toLocaleString('id-ID')} covers the ${earliestAmtStr} ${earliestInst} obligation individually, but across all pre-salary repayments you face a total portfolio funding gap of Rp${portfolioFundingGap.toLocaleString('id-ID')}.` : `Your available cash of Rp${cash.toLocaleString('id-ID')} is below the ${earliestAmtStr} ${earliestInst} obligation.`} Priority is given to ${earliestInst} based on due-date schedule.\n\n### Next step\nContact ${earliestInst} before ${earliestDateStr} to ask what repayment arrangements are available. Keep the ${later.length > 0 ? later[0].institutionName : 'subsequent'} payment due on ${later.length > 0 ? (later[0].formattedDate || later[0].dueDate) : 'its due date'} in view. FairAssist can compare repayment scenarios using your confirmed cash position before you decide how to allocate funds.`;
 
           const reasonText = individualCoverage
             ? `${earliestInst} is due first on ${earliestDateStr} before your salary on ${nextSalaryDate}. Your available cash of Rp${cash.toLocaleString('id-ID')} covers this individual payment, but across all pre-salary repayments (Rp${totalPreSalary.toLocaleString('id-ID')}), a portfolio funding gap of Rp${portfolioFundingGap.toLocaleString('id-ID')} remains before salary. Priority is given to ${earliestInst} based on due-date schedule.`
@@ -721,14 +663,7 @@ Contact ${earliestInst} before ${earliestDateStr} to ask what repayment arrangem
           ];
         } else {
           quote = `Your available cash of Rp${cash.toLocaleString('id-ID')} is sufficient to cover your pre-salary obligations.`;
-          summary = `### What I found
-You have Rp${totalPreSalary.toLocaleString('id-ID')} in confirmed repayments due before your salary arrives on ${nextSalaryDate || 'payday'}. Your confirmed available cash is Rp${cash.toLocaleString('id-ID')}.
-
-### What it means
-Your available cash covers all confirmed pre-salary obligations in full.
-
-### Next step
-Proceed with scheduled repayments on or before their due dates to maintain your credit standing.`;
+          summary = `### What I found\nYou have Rp${totalPreSalary.toLocaleString('id-ID')} in confirmed repayments due before your salary arrives on ${nextSalaryDate || 'payday'}. Your confirmed available cash is Rp${cash.toLocaleString('id-ID')}.\n\n### What it means\nYour available cash covers all confirmed pre-salary obligations in full.\n\n### Next step\nProceed with scheduled repayments on or before their due dates to maintain your credit standing.`;
 
           defaultActions = obligations.map((o: any, idx: number) => ({
             id: `action-${idx + 1}`,
@@ -812,18 +747,25 @@ Proceed with scheduled repayments on or before their due dates to maintain your 
   } catch (error: any) {
     console.error("Error in /api/analyze:", error);
     res.status(500).json({ 
-      error: "Failed to perform AI analysis", 
-      message: error.message || "Internal server error" 
+      error: "An unexpected error occurred while processing your request."
     });
   }
 });
 
 // 4. Action Simulator endpoint ("What if?")
-app.post("/api/simulate", async (req, res) => {
+app.post("/api/simulate", apiRateLimiter(40, 60000), async (req, res) => {
   try {
-    const { scenarioType, additionalAmount, extensionDays, financialContext } = req.body;
+    const { scenarioType, additionalAmount, extensionDays, financialContext } = req.body || {};
 
     const obligations = getActiveRepaymentObligations(financialContext?.obligations || []);
+    
+    // Integrity Safety: Require at least one active repayment obligation before simulating
+    if (obligations.length === 0) {
+      return res.status(422).json({
+        error: "At least one active repayment obligation is required for simulation."
+      });
+    }
+
     const availableCash = financialContext?.availableCash ?? 0;
     const essentialExpenses = financialContext?.essentialExpenses ?? 0;
     const nextSalaryDate = financialContext?.nextSalaryDate || "28 August 2026";
@@ -834,10 +776,10 @@ app.post("/api/simulate", async (req, res) => {
       return dA - dB;
     });
 
-    const targetObligation = sortedObligations[0] || null;
-    const targetInstitution = targetObligation?.institutionName || "Bank Central Asia (BCA)";
-    const targetAmount = targetObligation?.amount || 1200000;
-    const originalDueDate = targetObligation?.formattedDate || targetObligation?.dueDate || "25 August 2026";
+    const targetObligation = sortedObligations[0];
+    const targetInstitution = targetObligation?.institutionName || "Lender";
+    const targetAmount = targetObligation?.amount || 0;
+    const originalDueDate = targetObligation?.formattedDate || targetObligation?.dueDate || "due date";
 
     const preSalaryTotal = obligations.reduce((sum: number, o: any) => sum + (o.amount || 0), 0);
     const minimumCalculatedGap = Math.max(0, preSalaryTotal - availableCash);
@@ -845,7 +787,7 @@ app.post("/api/simulate", async (req, res) => {
     const isBank = targetInstitution.toLowerCase().includes('bca') || targetInstitution.toLowerCase().includes('bank') || targetObligation?.category === 'Bank Loan';
 
     if (scenarioType === "BORROW_MORE") {
-      const borrowAmt = additionalAmount || (minimumCalculatedGap > 0 ? minimumCalculatedGap : 1100000);
+      const borrowAmt = additionalAmount || (minimumCalculatedGap > 0 ? minimumCalculatedGap : 1000000);
       const simulatedCash = availableCash + borrowAmt;
       const simulatedGap = Math.max(0, (preSalaryTotal + essentialExpenses) - simulatedCash);
       const projectedCash = Math.max(0, simulatedCash - preSalaryTotal);
@@ -871,18 +813,18 @@ app.post("/api/simulate", async (req, res) => {
             availableCash: simulatedCash,
             projectedRemainingCash: projectedCash,
             nearTermRepayments: preSalaryTotal,
-            futureRepaymentBurden: Math.round(borrowAmt * 1.1),
+            futureRepaymentBurden: borrowAmt,
             preSalaryFundingGap: simulatedGap
           }
         },
         geminiAssessment: {
-          summary: `Borrowing an additional Rp${borrowAmt.toLocaleString('id-ID')} covers the immediate Rp${minimumCalculatedGap.toLocaleString('id-ID')} pre-salary funding gap, but adds new high-cost debt and daily interest charges due after your salary arrives on ${nextSalaryDate}. Essential expenses are not included because they have not been provided.`,
+          summary: `Borrowing an additional Rp${borrowAmt.toLocaleString('id-ID')} covers the immediate Rp${minimumCalculatedGap.toLocaleString('id-ID')} pre-salary funding gap, but adds new debt subject to lender interest and fees under POJK 40/2024 and SEOJK 19/2025 due after your salary arrives on ${nextSalaryDate}. Essential expenses are not included because they have not been provided.`,
           benefits: [
             `Provides immediate Rp${borrowAmt.toLocaleString('id-ID')} liquidity to cover the minimum calculated pre-salary gap.`
           ],
           keyRisks: [
-            `Adds new high-cost P2P debt due after salary on ${nextSalaryDate}.`,
-            `Incurs origination fees and ongoing daily interest under POJK 40/2024.`,
+            `Adds new debt due after salary on ${nextSalaryDate}.`,
+            `Incurs lender origination fees and ongoing daily interest under POJK 40/2024.`,
             `Increases future post-salary repayment burden by at least Rp${borrowAmt.toLocaleString('id-ID')}.`
           ]
         }
@@ -937,14 +879,14 @@ app.post("/api/simulate", async (req, res) => {
     }
   } catch (error: any) {
     console.error("Error in /api/simulate:", error);
-    res.status(500).json({ error: "Failed to run simulation", message: error.message });
+    res.status(500).json({ error: "An unexpected error occurred while processing your request." });
   }
 });
 
 // 5. Chat endpoint with Context Sufficiency Gate
-app.post("/api/chat", async (req, res) => {
+app.post("/api/chat", apiRateLimiter(60, 60000), async (req, res) => {
   try {
-    const { message, financialContext } = req.body;
+    const { message, financialContext } = req.body || {};
     const ai = getGeminiClient();
 
     const evidenceList = getActiveRepaymentEvidence(financialContext?.evidenceList || []);
@@ -988,10 +930,12 @@ app.post("/api/chat", async (req, res) => {
 
     // CASE 1: Insufficient Context (First turn generic question with 0 evidence/obligations)
     if (!hasSufficientContext) {
+      const isDemo = Boolean(financialContext?.userPersona?.syntheticFlag || (financialContext?.userPersona?.name && financialContext.userPersona.name.toLowerCase().includes('ayu')));
+      const greeting = isDemo ? "Hello, Ayu.\n\n" : "";
       return res.json({
         classification: 'EVIDENCE_REQUIRED',
         needsEvidence: true,
-        reply: `Hello, Ayu.\n\nI can help, but I need a little more information first.\n\nUpload your first repayment notice, or tell me the lender, amount due and due date.\n\nLet’s start with your first repayment notice.`,
+        reply: `${greeting}I can help, but I need a little more information first.\n\nUpload your first repayment notice, or tell me the lender, amount due and due date.\n\nLet’s start with your first repayment notice.`,
         retrievedSources: [],
         pipelineActivity: {
           currentStage: 'UNDERSTAND',
@@ -1150,13 +1094,24 @@ app.post("/api/chat", async (req, res) => {
     }
 
     // CASE 1.6: When cash and salary ARE present and user asks borrowing / scenario question
-    const isAskingBorrowing = lowerMsg.includes('borrow') || lowerMsg.includes('1.75') || lowerMsg.includes('1,75') || lowerMsg.includes('cover the gap') || lowerMsg.includes('new loan') || lowerMsg.includes('additional loan');
+    const isAskingBorrowing = lowerMsg.includes('borrow') || lowerMsg.includes('cover the gap') || lowerMsg.includes('new loan') || lowerMsg.includes('additional loan');
 
     if (isAskingBorrowing && obligationCount > 0 && !isCashSalaryMissing) {
       const totalPreSalary = obligations.reduce((sum: number, o: any) => sum + (o.amount || 0), 0);
       const cash = availableCash ?? 0;
+      const gap = Math.max(0, totalPreSalary - cash);
 
-      const replyText = `### What I found\nBorrowing Rp1,750,000 equals your currently identified repayment-only funding gap (Rp${totalPreSalary.toLocaleString('id-ID')} due minus Rp${cash.toLocaleString('id-ID')} cash). While borrowing Rp1,750,000 mathematically covers this gap before your salary arrives on ${nextSalaryDate}, it does not resolve your debt—it creates a **fourth repayment obligation**.\n\n### What it means\nThe repayment timing, total repayment amount, and interest/fees for a new loan are not yet known and depend on the lender. Furthermore, essential living expenses have not been provided, so a Rp0 remainder cannot be described as disposable cash. Under OJK guidelines (**SEOJK 19/SEOJK.06/2025**), exploring non-debt alternatives first is recommended.\n\n### Next step\n1. Consider asking EasyCash whether your Rp650,000 repayment (due 24 August) can move to your confirmed salary date of 28 August.\n2. Remember that any repayment date change requires explicit EasyCash confirmation.\n3. You remain the final decision maker—review both options in the Action Simulator before committing.`;
+      const sortedObligations = [...obligations].sort((a, b) => {
+        const dA = new Date(a.dueDate || a.formattedDate || '2099-01-01').getTime();
+        const dB = new Date(b.dueDate || b.formattedDate || '2099-01-01').getTime();
+        return dA - dB;
+      });
+      const earliest = sortedObligations[0];
+      const earliestInst = earliest?.institutionName || "earliest lender";
+      const earliestAmtStr = `Rp${(earliest?.amount || 0).toLocaleString('id-ID')}`;
+      const earliestDateStr = earliest?.formattedDate || earliest?.dueDate || "due date";
+
+      const replyText = `### What I found\nBorrowing Rp${gap.toLocaleString('id-ID')} equals your currently identified repayment-only funding gap (Rp${totalPreSalary.toLocaleString('id-ID')} due minus Rp${cash.toLocaleString('id-ID')} cash). While borrowing Rp${gap.toLocaleString('id-ID')} mathematically covers this gap before your salary arrives on ${nextSalaryDate}, it does not resolve your debt—it creates an additional repayment obligation.\n\n### What it means\nThe repayment timing, total repayment amount, and interest/fees for a new loan depend on the lender. Furthermore, essential living expenses have not been provided, so a Rp0 remainder cannot be described as disposable cash. Under OJK guidelines (**SEOJK 19/SEOJK.06/2025**), exploring non-debt alternatives first is recommended.\n\n### Next step\n1. Consider asking ${earliestInst} whether your ${earliestAmtStr} repayment (due ${earliestDateStr}) can move to your confirmed salary date of ${nextSalaryDate}.\n2. Remember that any repayment date change requires explicit ${earliestInst} confirmation.\n3. You remain the final decision maker—review both options in the Action Simulator before committing.`;
 
       return res.json({
         reply: replyText,
@@ -1185,22 +1140,22 @@ app.post("/api/chat", async (req, res) => {
             id: "action-contact-earliest",
             category: "DO TODAY",
             priorityOrder: 1,
-            title: `Ask EasyCash about moving the repayment date`,
-            reason: `EasyCash is due first on 24 August 2026 for Rp650,000. Ask EasyCash whether this repayment can be moved to 28 August 2026, your confirmed salary date. Any change requires EasyCash confirmation.`,
-            financialImpact: "If approved, pre-salary repayments decrease from Rp2,600,000 to Rp1,950,000 and the funding gap decreases from Rp1,750,000 to Rp1,100,000.",
+            title: `Ask ${earliestInst} about moving the repayment date`,
+            reason: `${earliestInst} is due first on ${earliestDateStr} for ${earliestAmtStr}. Ask ${earliestInst} whether this repayment can be moved to ${nextSalaryDate}, your confirmed salary date. Any change requires ${earliestInst} confirmation.`,
+            financialImpact: `If approved, pre-salary repayments decrease by ${earliestAmtStr} before payday.`,
             evidenceUsed: evidenceList.map((e: any) => e.title || "Repayment notice"),
             trustedSourcesUsed: ["POJK No. 40 Tahun 2024", "SEOJK No. 19/SEOJK.06/2025"],
             currentSourceStatus: "Current",
             requiresHumanAuthorisation: true,
-            authorisingEntity: "EasyCash",
-            primaryActionButtonLabel: `Prepare EasyCash request →`,
+            authorisingEntity: earliestInst,
+            primaryActionButtonLabel: `Prepare ${earliestInst} request →`,
             actionCode: "PREPARE_EXTENSION",
             lineage: {
               evidenceProvided: evidenceList.map((e: any) => e.title),
               retrievedRules: ["POJK No. 40 Tahun 2024"],
-              policiesApplied: ["EasyCash standard terms"],
+              policiesApplied: [`${earliestInst} standard terms`],
               geminiReasoning: "Explores non-debt alternative first.",
-              financialCalculation: "Shifts Rp650,000 obligation to payday if approved.",
+              financialCalculation: `Shifts ${earliestAmtStr} obligation to payday if approved.`,
               escalationBoundaryNote: "Subject to lender confirmation."
             }
           }
@@ -1311,32 +1266,32 @@ app.post("/api/chat", async (req, res) => {
             trustedSourcesUsed: ["POJK No. 40 Tahun 2024", "SEOJK No. 19/SEOJK.06/2025"],
             currentSourceStatus: "Current",
             requiresHumanAuthorisation: false,
-              authorisingEntity: "Borrower",
-              primaryActionButtonLabel: "Simulate scenarios →",
-              actionCode: "CUSTOM",
-              lineage: {
-                evidenceProvided: evidenceList.map((e: any) => e.title),
-                retrievedRules: ["POJK No. 40 Tahun 2024"],
-                policiesApplied: [],
-                geminiReasoning: "Scenario comparison using confirmed cash position.",
-                financialCalculation: `Simulating cash allocation across ${obligations.length} obligations.`,
-                escalationBoundaryNote: "Simulations provide decision support only."
-              }
+            authorisingEntity: "Borrower",
+            primaryActionButtonLabel: "Simulate scenarios →",
+            actionCode: "CUSTOM",
+            lineage: {
+              evidenceProvided: evidenceList.map((e: any) => e.title),
+              retrievedRules: ["POJK No. 40 Tahun 2024"],
+              policiesApplied: [],
+              geminiReasoning: "Scenario comparison using confirmed cash position.",
+              financialCalculation: `Simulating cash allocation across ${obligations.length} obligations.`,
+              escalationBoundaryNote: "Simulations provide decision support only."
             }
-          ],
-          pipelineActivity: {
-            currentStage: 'REASON',
-            stages: [
-              { stage: 'UNDERSTAND', status: 'completed', message: 'Parsed query & confirmed context', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) },
-              { stage: 'RETRIEVE', status: 'completed', message: 'Retrieved matching OJK rules & lender policies', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) },
-              { stage: 'VERIFY', status: 'completed', message: 'Verified cash position & due date sequence', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) },
-              { stage: 'REASON', status: 'completed', message: 'Cash-flow gap identified · decision support ready', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) },
-              { stage: 'ACT', status: 'pending', message: 'Awaiting borrower decision', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) }
-            ],
-            activeStepDescription: 'Cash-flow gap identified · decision support ready'
           }
-        });
-      }
+        ],
+        pipelineActivity: {
+          currentStage: 'REASON',
+          stages: [
+            { stage: 'UNDERSTAND', status: 'completed', message: 'Parsed query & confirmed context', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) },
+            { stage: 'RETRIEVE', status: 'completed', message: 'Retrieved matching OJK rules & lender policies', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) },
+            { stage: 'VERIFY', status: 'completed', message: 'Verified cash position & due date sequence', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) },
+            { stage: 'REASON', status: 'completed', message: 'Cash-flow gap identified · decision support ready', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) },
+            { stage: 'ACT', status: 'pending', message: 'Awaiting borrower decision', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) }
+          ],
+          activeStepDescription: 'Cash-flow gap identified · decision support ready'
+        }
+      });
+    }
 
     // CASE 2: Check if user asks to add a repayment notice (AdaKami, BCA, EasyCash, Mandiri, or generic)
     let requestedLender = '';
@@ -1359,22 +1314,25 @@ app.post("/api/chat", async (req, res) => {
         ? `Add ${requestedLender} repayment notice →`
         : (confirmedLenders.length > 0 ? 'Add another repayment notice →' : 'Add repayment notice →');
 
+      const isDemo = Boolean(financialContext?.userPersona?.syntheticFlag || (financialContext?.userPersona?.name && financialContext.userPersona.name.toLowerCase().includes('ayu')));
+      const salutation = isDemo ? "Of course, Ayu.\n\n" : "";
+
       let replyText = '';
       if (requestedLender === 'BCA') {
         const hasAdaKami = confirmedLenders.some(l => String(l).toLowerCase().includes('adakami'));
         if (hasAdaKami) {
-          replyText = `Of course, Ayu.\n\nPlease add your BCA repayment notice so I can include it with your confirmed AdaKami obligation.\n\nI won’t assume the amount, due date, or product until I analyse the evidence and you confirm it.`;
+          replyText = `${salutation}Please add your BCA repayment notice so I can include it with your confirmed AdaKami obligation.\n\nI won’t assume the amount, due date, or product until I analyse the evidence and you confirm it.`;
         } else if (confirmedLenders.length > 0) {
-          replyText = `Of course, Ayu.\n\nPlease add your BCA repayment notice so I can include it with your confirmed ${confirmedLenders[0]} obligation.\n\nI won’t assume the amount, due date, or product until I analyse the evidence and you confirm it.`;
+          replyText = `${salutation}Please add your BCA repayment notice so I can include it with your confirmed ${confirmedLenders[0]} obligation.\n\nI won’t assume the amount, due date, or product until I analyse the evidence and you confirm it.`;
         } else {
-          replyText = `Of course, Ayu.\n\nPlease add your BCA repayment notice so I can include it in your obligations.\n\nI won’t assume the amount, due date, or product until I analyse the evidence and you confirm it.`;
+          replyText = `${salutation}Please add your BCA repayment notice so I can include it in your obligations.\n\nI won’t assume the amount, due date, or product until I analyse the evidence and you confirm it.`;
         }
       } else if (requestedLender === 'AdaKami') {
-        replyText = `Of course, Ayu.\n\nPlease add your AdaKami repayment notice so I can include it in your current obligations and check the rules that apply.\n\nI won’t assume the amount or due date until I analyse and you confirm the evidence.`;
+        replyText = `${salutation}Please add your AdaKami repayment notice so I can include it in your current obligations and check the rules that apply.\n\nI won’t assume the amount or due date until I analyse and you confirm the evidence.`;
       } else if (requestedLender) {
-        replyText = `Of course, Ayu.\n\nPlease add your ${requestedLender} repayment notice so I can include it in your current obligations and check the rules that apply.\n\nI won’t assume the amount or due date until I analyse and you confirm the evidence.`;
+        replyText = `${salutation}Please add your ${requestedLender} repayment notice so I can include it in your current obligations and check the rules that apply.\n\nI won’t assume the amount or due date until I analyse and you confirm the evidence.`;
       } else {
-        replyText = `Of course, Ayu.\n\nYou can add another repayment notice and I’ll analyse it alongside your confirmed obligations.\n\nI won’t assume the lender, amount or due date until I analyse the evidence and you confirm it.`;
+        replyText = `${salutation}You can add another repayment notice and I’ll analyse it alongside your confirmed obligations.\n\nI won’t assume the lender, amount or due date until I analyse the evidence and you confirm it.`;
       }
 
       return res.json({
@@ -1583,7 +1541,7 @@ Structure your response using clean Markdown with no more than 3 short sections:
 
   } catch (error: any) {
     console.error("Error in /api/chat:", error);
-    res.status(500).json({ error: "Failed to process chat message", message: error.message });
+    res.status(500).json({ error: "An unexpected error occurred while processing your request." });
   }
 });
 

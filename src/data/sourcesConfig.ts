@@ -84,7 +84,7 @@ export const CANONICAL_TRUSTED_SOURCES: CanonicalSourceConfig[] = [
     codeNumber: 'POJK 22 Tahun 2023',
     sourceType: 'Regulation (POJK)',
     canonicalUrl: 'https://ojk.go.id/id/regulasi/Pages/Pelindungan-Konsumen-dan-Masyarakat-di-Sektor-Jasa-Keuangan.aspx',
-    effectiveDate: '2023-12-20',
+    effectiveDate: '2023-12-22',
     status: 'Current'
   },
   {
