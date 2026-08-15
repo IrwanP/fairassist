@@ -18,6 +18,46 @@ FairAssist is being engineered around an agentic AI technology foundation combin
 
 ---
 
+## At a Glance
+
+**Problem**  
+Consumers can face multiple repayment deadlines, fragmented financial evidence, limited cash before payday, and uncertainty about which obligation requires attention first.
+
+**Approach**  
+FairAssist converts confirmed financial evidence into structured decision context, connects that context with relevant trusted information, and helps the user explore responsible next steps.
+
+**Technology foundation**  
+**Google ADK · RAG · Gemini · Google Cloud Run**
+
+**Key capabilities**  
+Multimodal evidence analysis · Context sufficiency · Trusted regulatory retrieval · Cash-flow reasoning · Action simulation · Human-in-the-loop control
+
+---
+
+## Technology Foundation
+
+FairAssist combines an implemented customer-facing application stack with the target agentic foundation for its AI architecture.
+
+The current application already implements **Gemini integration, multimodal evidence analysis, financial-context processing, source validation, cash-flow reasoning, action simulation, and decision-integrity safeguards**.
+
+The target agentic architecture extends this foundation with **Google ADK orchestration, production RAG, and Google Cloud Run deployment**.
+
+| Layer | Technology | Role |
+|---|---|---|
+| Agent orchestration | **Google Agent Development Kit (ADK)** | Target orchestration layer for specialised agent responsibilities, tools, context, and workflow |
+| Generative AI | **Gemini** | Multimodal evidence analysis, reasoning, structured generation, and conversational intelligence |
+| Grounding | **Retrieval-Augmented Generation (RAG)** | Target grounding layer for trusted regulatory and lender-policy evidence |
+| Deployment | **Google Cloud Run** | Target managed application and agent runtime |
+| Frontend | React + TypeScript + Vite | Customer-facing FairAssist experience |
+| API layer | Express + TypeScript | Secure frontend/backend integration |
+| Source validation | Server-side trusted-source verification | Separates trusted domains from successfully verified sources |
+
+The objective is not simply to expose a Gemini-powered chatbot.
+
+FairAssist is designed as an **agentic, grounded, multimodal, and deployable customer-facing AI decision-support system**.
+
+---
+
 ## Why FairAssist
 
 A repayment problem is often not simply about whether someone earns enough money.
@@ -289,7 +329,7 @@ Used as part of the regulatory framework applicable to LPBBTI / Pindar (Pinjaman
 
 **Penyelenggaraan Layanan Pendanaan Bersama Berbasis Teknologi Informasi**
 
-Used for current operational guidance relevant to LPBBTI.
+Used for operational guidance relevant to LPBBTI.
 
 FairAssist distinguishes between:
 
@@ -327,57 +367,13 @@ This prevents FairAssist from presenting source freshness with more certainty th
 
 ---
 
-# Track 1 Technology Foundation
+## Target Agentic Architecture
 
-FairAssist is being engineered around four core technologies for its agentic architecture:
+The diagram below represents the target agentic architecture.
 
-### Google Agent Development Kit (ADK)
+The current application already implements the customer-facing experience, Gemini integration, multimodal evidence analysis, financial-context processing, trusted-source validation, and decision-support safeguards.
 
-Provides the orchestration layer for specialised FairAssist agent responsibilities, tools, context, and workflow.
-
-### Retrieval-Augmented Generation (RAG)
-
-Provides grounding through retrieval of relevant regulatory, consumer-protection, and lender-policy evidence.
-
-### Gemini
-
-Provides multimodal evidence understanding, contextual reasoning, structured generation, and conversational intelligence.
-
-### Google Cloud Run
-
-Provides the managed runtime for deploying the FairAssist application and agent services.
-
-Together:
-
-```text
-ADK
- │
- ├── Agent orchestration
- │
-RAG
- │
- ├── Trusted knowledge retrieval
- │
-Gemini
- │
- ├── Multimodal understanding
- │
- └── Reasoning
- │
-Cloud Run
- │
- └── Managed application and agent runtime
-```
-
-The objective is not simply to expose a Gemini-powered chatbot.
-
-FairAssist is designed as an **agentic, grounded, multimodal, and deployable customer-facing AI decision-support system**.
-
----
-
-## Agentic Architecture
-
-The FairAssist architecture separates major responsibilities so that evidence understanding, retrieval, reasoning, and decision support can evolve independently.
+**Google ADK orchestration, production RAG, and Google Cloud Run deployment form the next layer of the agentic architecture.**
 
 ```text
                          ┌─────────────────────────────┐
@@ -467,7 +463,7 @@ Responsibilities include:
 
 ### Regulatory Retrieval
 
-The retrieval layer is designed around **RAG** to provide trusted information relevant to the confirmed user situation.
+The target retrieval layer uses **RAG** to provide trusted information relevant to the confirmed user situation.
 
 Retrieval sources can include:
 
@@ -510,7 +506,7 @@ Responsibilities include:
 
 ## Retrieval-Augmented Generation
 
-FairAssist's RAG architecture is intended to ensure that regulatory and policy claims are grounded in retrieved evidence rather than relying solely on a model's internal knowledge.
+The target RAG architecture is designed to ensure that regulatory and policy claims are grounded in retrieved evidence rather than relying solely on a model's internal knowledge.
 
 ```text
 Confirmed user situation
@@ -557,7 +553,7 @@ FairAssist aims to maintain clear separation between:
 
 ## Google Cloud Run
 
-FairAssist is designed to use **Google Cloud Run** as the managed runtime for its application and agent backend.
+FairAssist's target deployment architecture uses **Google Cloud Run** as the managed runtime for the application and agent backend.
 
 The deployment architecture is designed to keep:
 
@@ -568,20 +564,6 @@ The deployment architecture is designed to keep:
 - financial reasoning server-side.
 
 This avoids exposing sensitive backend configuration or model credentials to the browser.
-
----
-
-## Technology Stack
-
-| Layer | Technology | Role |
-|---|---|---|
-| Agent orchestration | **Google Agent Development Kit (ADK)** | Coordinates specialised agent responsibilities, tools, context, and workflow |
-| Generative AI | **Gemini** | Multimodal evidence analysis, reasoning, and conversational intelligence |
-| Grounding | **Retrieval-Augmented Generation (RAG)** | Retrieves trusted regulatory and lender-policy evidence |
-| Deployment | **Google Cloud Run** | Managed application and agent runtime |
-| Frontend | React + TypeScript + Vite | Customer-facing FairAssist experience |
-| API layer | Express + TypeScript | Secure frontend/backend integration |
-| Source validation | Server-side trusted-source verification | Separates trusted domains from successfully verified sources |
 
 ---
 
@@ -605,7 +587,9 @@ The current FairAssist application already demonstrates the following capabiliti
 | Demo-data isolation | ✅ Implemented |
 | Safe evidence fallback behaviour | ✅ Implemented |
 | API request validation | ✅ Implemented |
-| API rate limiting | ✅ Implemented |
+| Evidence-analysis API rate limiting | ✅ Implemented |
+
+This table intentionally describes capabilities already present in the current application.
 
 ---
 
@@ -638,7 +622,7 @@ The sample scenario is activated only when explicitly selected.
 
 ## Evidence & Decision Integrity
 
-FairAssist applies several integrity principles.
+FairAssist applies six core integrity principles.
 
 ### Evidence Before Assumption
 
@@ -688,19 +672,21 @@ APP_URL="MY_APP_URL"
 
 Actual `.env` files are excluded through `.gitignore`.
 
-Current safeguards include:
+Current application safeguards include:
 
 - server-side API key handling;
 - trusted-domain allowlisting;
 - evidence payload limits;
 - request validation;
-- API rate limiting;
+- evidence-analysis API rate limiting;
 - safe production error responses;
 - non-fabricating evidence fallbacks;
 - explicit uncertainty handling;
 - demo-state isolation.
 
-Financial documents should be processed only for the intended user interaction and should not be unnecessarily retained.
+FairAssist is designed to minimise unnecessary handling and retention of financial evidence.
+
+Production deployments should implement storage, retention, deletion, access-control, and audit controls appropriate to the intended use case.
 
 ---
 
@@ -762,95 +748,39 @@ The development application currently runs on port `3000` unless configured diff
 
 ## Repository Structure
 
-The current repository contains the FairAssist frontend, application API, evidence-processing logic, regulatory-source configuration, and retrieval services.
+The current repository contains the FairAssist frontend, application API, evidence-processing logic, regulatory-source configuration, and trusted retrieval services.
 
-As the agentic architecture evolves, responsibilities can be separated further around specialised agent and retrieval components.
-
-A representative architecture is:
+The structure below reflects the current repository rather than the future target architecture:
 
 ```text
 fairassist/
 │
+├── app/
+│   └── applet/
+│       └── src/
+│
+├── assets/
+│   └── aistudio/
+│
 ├── src/
 │   ├── components/
-│   ├── services/
 │   ├── data/
+│   ├── services/
 │   └── ...
 │
-├── agents/
-│   ├── evidence/
-│   ├── context/
-│   ├── retrieval/
-│   ├── reasoning/
-│   └── action/
-│
-├── rag/
-│   ├── corpus/
-│   ├── retriever/
-│   └── source-verification/
-│
-├── server.ts
-├── Dockerfile
-├── cloudrun/
 ├── .env.example
+├── .gitignore
+├── bun.lock
+├── index.html
+├── metadata.json
 ├── package.json
+├── server.ts
+├── tsconfig.json
+├── vite.config.ts
 └── README.md
 ```
 
-The exact structure may evolve as the agent orchestration and deployment architecture are refined.
-
----
-
-## Design Principles
-
-FairAssist is built around six principles:
-
-### Evidence before assumption
-
-Use confirmed financial facts instead of silent defaults.
-
-### Context before recommendation
-
-Ask for missing information before producing consequential guidance.
-
-### Grounding before claims
-
-Connect regulatory and policy statements to trusted evidence.
-
-### Verification before certainty
-
-Do not describe unavailable sources as successfully verified.
-
-### Simulation before commitment
-
-Allow users to explore consequences before acting.
-
-### Human judgement remains final
-
-FairAssist supports the user.
-
-It does not replace the user.
-
----
-
-## Project Direction
-
-FairAssist continues to evolve toward a fully agentic, grounded, and production-deployable customer-facing AI system.
-
-The technical direction centres on:
-
-**ADK · RAG · Gemini · Cloud Run**
-
-with continued emphasis on:
-
-- multimodal financial evidence understanding;
-- specialised agent orchestration;
-- trusted regulatory retrieval;
-- source lineage;
-- financial decision-integrity safeguards;
-- agent evaluation;
-- production security and governance;
-- scalable deployment.
+As ADK orchestration, RAG, and Cloud Run deployment are incorporated, their implementation components will become directly visible in the repository structure.
 
 ---
 
