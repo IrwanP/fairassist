@@ -1,6 +1,6 @@
 {
   "name": "FairAssist",
-  "description": "Consumer-facing AI financial decision-support agent for understanding financial obligations, applicable regulations, and prioritised next steps.",
+  "description": "Evidence-grounded AI financial decision support for Indonesian consumers.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
