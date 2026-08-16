@@ -10,7 +10,8 @@ import {
   Edit3, 
   RotateCcw,
   Sparkles,
-  Layers
+  Layers,
+  ArrowRight
 } from 'lucide-react';
 import { EvidenceDetailModal } from './EvidenceDetailModal';
 
@@ -21,6 +22,7 @@ interface EvidenceColumnProps {
   onReplaceFile?: (item: EvidenceItem) => void;
   onRemoveEvidence?: (id: string) => void;
   onLoadSampleScenario?: () => void;
+  onStartFreshWithOwnEvidence?: () => void;
   isFocusArea?: boolean;
   isDemoScenario?: boolean;
 }
@@ -32,6 +34,7 @@ export const EvidenceColumn: React.FC<EvidenceColumnProps> = ({
   onReplaceFile,
   onRemoveEvidence,
   onLoadSampleScenario,
+  onStartFreshWithOwnEvidence,
   isFocusArea = false,
   isDemoScenario = false,
 }) => {
@@ -70,28 +73,63 @@ export const EvidenceColumn: React.FC<EvidenceColumnProps> = ({
         <div className="flex items-center gap-2">
           {onLoadSampleScenario && (
             isDemoScenario ? (
-              <button
-                onClick={onLoadSampleScenario}
-                className="text-[10px] font-semibold text-amber-800 hover:text-amber-950 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-2 py-0.5 rounded cursor-pointer transition-colors"
-                title="Reset demo scenario"
-              >
-                Reset Demo
-              </button>
-            ) : (
-              <button
-                onClick={onLoadSampleScenario}
-                className="text-[10px] font-semibold text-amber-800 hover:text-amber-950 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-2 py-0.5 rounded cursor-pointer transition-colors"
-                title="Load sample scenario"
-              >
-                Try sample scenario
-              </button>
-            )
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-semibold text-indigo-800 bg-indigo-50 border border-indigo-200/90 px-2 py-0.5 rounded-md">
+                  Sample scenario active
+                </span>
+                <button
+                  type="button"
+                  onClick={onLoadSampleScenario}
+                  className="text-[10px] font-semibold text-stone-600 hover:text-stone-900 bg-stone-100 hover:bg-stone-200 border border-stone-200 px-2 py-0.5 rounded-md cursor-pointer transition-colors"
+                  title="Reset demo scenario"
+                >
+                  Reset Demo
+                </button>
+              </div>
+            ) : null
           )}
           <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-stone-100 text-stone-700 border border-stone-200">
             {evidenceList.length} Items
           </span>
         </div>
       </div>
+
+      {/* Recommended Walkthrough Card (Top of Column) */}
+      {!isDemoScenario && onLoadSampleScenario && (
+        <button
+          type="button"
+          onClick={onLoadSampleScenario}
+          className="w-full p-2.5 bg-teal-50/70 hover:bg-teal-50/95 text-left rounded-2xl transition-all cursor-pointer border border-teal-300/80 shadow-2xs group relative overflow-hidden flex items-center justify-between gap-2"
+        >
+          <div className="flex items-start gap-2.5 min-w-0">
+            <div className="w-6 h-6 rounded-lg bg-teal-100/80 border border-teal-200/90 flex items-center justify-center shrink-0 mt-0.5">
+              <Sparkles className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+            </div>
+            <div className="flex flex-col min-w-0">
+              <span className="text-[9px] font-bold text-teal-800 tracking-wider uppercase">
+                RECOMMENDED WALKTHROUGH
+              </span>
+              <span className="text-xs font-bold text-stone-900 leading-snug mt-0.5">
+                Try guided sample
+              </span>
+              <span className="text-[10px] text-stone-500 mt-0.5 leading-tight">
+                See FairAssist end-to-end · ~2 min
+              </span>
+            </div>
+          </div>
+          <ArrowRight className="w-4 h-4 text-teal-700/70 group-hover:text-teal-800 group-hover:translate-x-0.5 transition-all shrink-0 mr-0.5" />
+        </button>
+      )}
+
+      {/* Quiet Separator between Walkthrough and Manual Evidence */}
+      {!isDemoScenario && onLoadSampleScenario && (
+        <div className="relative flex items-center justify-center my-1">
+          <div className="w-full border-t border-stone-200/90"></div>
+          <span className="bg-stone-100/60 px-2.5 text-[9px] text-stone-400 uppercase tracking-widest font-semibold absolute rounded">
+            OR USE YOUR OWN EVIDENCE
+          </span>
+        </div>
+      )}
 
       {/* Add Financial Evidence Box */}
       <div className={`flex flex-col gap-2 p-3.5 rounded-2xl transition-all duration-300 relative ${
@@ -108,10 +146,23 @@ export const EvidenceColumn: React.FC<EvidenceColumnProps> = ({
             )}
             <span>Add financial evidence</span>
           </span>
-          <span className="text-[10px] font-semibold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-100">
+          <span className="text-[10px] font-medium text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-100/80">
             Multimodal Gemini
           </span>
         </div>
+
+        {isDemoScenario && (
+          <div className="flex items-center justify-between p-2 bg-indigo-50/70 border border-indigo-200/80 rounded-xl text-[11px]">
+            <span className="text-indigo-900 font-medium">Sample scenario active</span>
+            <button
+              type="button"
+              onClick={onStartFreshWithOwnEvidence || onLoadSampleScenario}
+              className="text-[10px] font-semibold text-indigo-900 hover:text-indigo-950 bg-indigo-100/90 hover:bg-indigo-200 border border-indigo-300/80 px-2 py-0.5 rounded cursor-pointer transition-colors"
+            >
+              Start fresh with your own evidence
+            </button>
+          </div>
+        )}
         
         <button
           onClick={() => onOpenUploadModal('camera')}
@@ -147,37 +198,15 @@ export const EvidenceColumn: React.FC<EvidenceColumnProps> = ({
         </button>
       </div>
 
-      {/* Empty State Banner when no evidence exists */}
+      {/* Empty State Status Card when no evidence exists */}
       {evidenceList.length === 0 && (
-        <div className="p-4 bg-stone-50 border border-stone-200/80 rounded-2xl space-y-3">
-          <div className="space-y-1">
-            <h4 className="text-xs font-bold text-stone-900">
-              No evidence yet
-            </h4>
-            <p className="text-[11px] text-stone-600 leading-relaxed">
-              Add a repayment notice when FairAssist asks for it.
-            </p>
-          </div>
-
-          <div className="flex flex-col gap-2 pt-1">
-            <button
-              onClick={() => onOpenUploadModal('screenshot')}
-              className="w-full py-2 px-3 bg-white hover:bg-stone-50 text-stone-800 border border-stone-300 text-xs font-semibold rounded-xl shadow-2xs transition-colors cursor-pointer flex items-center justify-center gap-1.5"
-            >
-              <span className="text-indigo-600 font-bold">＋</span>
-              <span>Add evidence</span>
-            </button>
-
-            {onLoadSampleScenario && (
-              <button
-                onClick={onLoadSampleScenario}
-                className="w-full py-1.5 px-3 bg-transparent hover:bg-stone-100 text-stone-600 text-[11px] font-medium rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1 border border-stone-200/60"
-              >
-                <Sparkles className="w-3 h-3 text-amber-600" />
-                <span>Try sample scenario</span>
-              </button>
-            )}
-          </div>
+        <div className="p-4 bg-stone-50 border border-stone-200/80 rounded-2xl space-y-1">
+          <h4 className="text-xs font-bold text-stone-900">
+            No evidence yet
+          </h4>
+          <p className="text-[11px] text-stone-600 leading-relaxed">
+            Add a repayment notice when FairAssist asks for it.
+          </p>
         </div>
       )}
 
@@ -200,7 +229,7 @@ export const EvidenceColumn: React.FC<EvidenceColumnProps> = ({
 
                 {/* Preloaded Demo vs User Uploaded Badge */}
                 {isPreloadedDemo ? (
-                  <span className="text-[9px] bg-amber-50 text-amber-800 border border-amber-200/80 px-1.5 py-0.5 rounded font-bold uppercase tracking-tight">
+                  <span className="text-[9px] bg-indigo-50 text-indigo-800 border border-indigo-200/80 px-1.5 py-0.5 rounded font-bold uppercase tracking-tight">
                     Sample Evidence Pack
                   </span>
                 ) : (

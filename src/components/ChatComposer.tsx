@@ -20,7 +20,9 @@ export const ChatComposer: React.FC<ChatComposerProps> = ({
     {
       id: 'msg-1',
       sender: 'agent',
-      text: `### What I found\n\nHello Ayu. I have analysed your obligations at **${context.selectedBank.name}** and **${context.selectedPindar.name}**.\n\n* **Available cash:** Rp850,000\n* **Due before salary:** Rp1,950,000 (25–27 August 2026)\n* **Monthly salary credit:** Rp8,500,000 (28 August 2026)\n\n### What this means\n\nYour situation is a **3-day cash-flow timing gap**, not an overall income shortfall. How can I assist you with your options today?`,
+      text: context.userPersona?.syntheticFlag
+        ? `### What I found\n\nHello Ayu. I have analysed your obligations at **${context.selectedBank.name}** and **${context.selectedPindar.name}**.\n\n* **Available cash:** Rp850,000\n* **Due before salary:** Rp1,950,000 (25–27 August 2026)\n* **Monthly salary credit:** Rp8,500,000 (28 August 2026)\n\n### What this means\n\nYour situation is a **3-day cash-flow timing gap**, not an overall income shortfall. How can I assist you with your options today?`
+        : `Hello.\n\nTell me what you need help with, or add a repayment notice. I’ll help you understand what applies and what to do next.`,
       timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
       retrievedSources: [
         {

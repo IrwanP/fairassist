@@ -27,6 +27,8 @@ interface EvidenceUploadModalProps {
   ) => void;
   requestedInstitution?: string;
   onMismatchStateChange?: (isMismatch: boolean) => void;
+  isDemoScenario?: boolean;
+  onStartFreshWithOwnEvidence?: () => void;
 }
 
 type StepType = 'select_or_capture' | 'review_capture' | 'review_file' | 'analyzing' | 'gemini_review';
@@ -79,6 +81,8 @@ export const EvidenceUploadModal: React.FC<EvidenceUploadModalProps> = ({
   onAddEvidence,
   requestedInstitution = '',
   onMismatchStateChange,
+  isDemoScenario = false,
+  onStartFreshWithOwnEvidence,
 }) => {
   const [activeType, setActiveType] = useState<'camera' | 'screenshot' | 'document'>(initialType);
   const [step, setStep] = useState<StepType>('select_or_capture');
@@ -590,6 +594,29 @@ export const EvidenceUploadModal: React.FC<EvidenceUploadModalProps> = ({
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {/* Sample scenario notification banner */}
+        {isDemoScenario && (
+          <div className="flex items-center justify-between p-2.5 bg-indigo-50/80 border border-indigo-200/90 rounded-xl text-xs">
+            <div className="flex items-center gap-2 text-indigo-900 min-w-0 mr-2">
+              <Sparkles className="w-4 h-4 text-indigo-600 shrink-0" />
+              <span className="text-[11px] font-medium leading-tight">
+                Sample scenario active · avoid mixing real evidence with sample data
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (onStartFreshWithOwnEvidence) {
+                  onStartFreshWithOwnEvidence();
+                }
+              }}
+              className="text-[10px] font-semibold text-indigo-900 hover:text-indigo-950 bg-indigo-100 hover:bg-indigo-200 border border-indigo-300 px-2.5 py-1 rounded-lg cursor-pointer transition-colors whitespace-nowrap shrink-0"
+            >
+              Start fresh with your own evidence
+            </button>
+          </div>
+        )}
 
         {/* Workflow Switch Tabs */}
         {step === 'select_or_capture' && (

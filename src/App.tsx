@@ -78,6 +78,12 @@ export default function App() {
   const [replacingEvidenceItem, setReplacingEvidenceItem] = useState<EvidenceItem | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [draftOpenTrigger, setDraftOpenTrigger] = useState<number>(0);
+  const [isSampleResetConfirmOpen, setIsSampleResetConfirmOpen] = useState<boolean>(false);
+  const [pendingUploadIntent, setPendingUploadIntent] = useState<{
+    type: 'camera' | 'screenshot' | 'document';
+    targetInst?: string | null;
+    replacingItem?: EvidenceItem | null;
+  } | null>(null);
 
   // State integrity flags
   const [isDemoScenario, setIsDemoScenario] = useState<boolean>(false);
@@ -127,9 +133,7 @@ export default function App() {
     {
       id: 'msg-welcome',
       sender: 'agent',
-      text: `### Hello, Ayu.
-
-Tell me what you need help with, or add a repayment notice. I’ll help you understand what applies and what to do next.`,
+      text: `Hello.\n\nTell me what you need help with, or add a repayment notice. I’ll help you understand what applies and what to do next.`,
       timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
       retrievedSources: []
     }
@@ -275,6 +279,19 @@ Tell me what you need help with, or add a repayment notice. I’ll help you unde
 
   const financialContext: FinancialContext = {
     ...DEFAULT_FINANCIAL_CONTEXT,
+    userPersona: isDemoScenario
+      ? {
+          name: 'Ayu Putri',
+          email: 'ayu.putri@demo.fairassist.id',
+          occupation: 'Administrative Professional',
+          syntheticFlag: true,
+        }
+      : {
+          name: 'Borrower',
+          email: 'borrower@fairassist.id',
+          occupation: 'Borrower',
+          syntheticFlag: false,
+        },
     selectedBank,
     selectedPindar,
     evidenceList: evidenceList,
@@ -307,7 +324,7 @@ Tell me what you need help with, or add a repayment notice. I’ll help you unde
       {
         id: 'msg-welcome',
         sender: 'agent',
-        text: `### Hello, Ayu.\n\nTell me what you need help with, or add a repayment notice. I’ll help you understand what applies and what to do next.`,
+        text: `Hello.\n\nTell me what you need help with, or add a repayment notice. I’ll help you understand what applies and what to do next.`,
         timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
         retrievedSources: []
       }
@@ -329,6 +346,15 @@ Tell me what you need help with, or add a repayment notice. I’ll help you unde
     setAvailableCash(850000);
     setNextSalaryDate('2026-08-28');
     setNextSalaryAmount(8500000);
+    setChatMessages([
+      {
+        id: 'msg-welcome-sample',
+        sender: 'agent',
+        text: `### Hello, Ayu.\n\nTell me what you need help with, or add a repayment notice. I’ll help you understand what applies and what to do next.`,
+        timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+        retrievedSources: []
+      }
+    ]);
     setTimeout(() => {
       handleTriggerAnalysis();
     }, 50);
@@ -495,6 +521,11 @@ Tell me what you need help with, or add a repayment notice. I’ll help you unde
   };
 
   const handleOpenUploadModal = (type: 'camera' | 'screenshot' | 'document', targetInst?: string | null) => {
+    if (isDemoScenario) {
+      setPendingUploadIntent({ type, targetInst, replacingItem: null });
+      setIsSampleResetConfirmOpen(true);
+      return;
+    }
     setReplacingEvidenceItem(null);
     setUploadModalType(type);
     if (targetInst !== undefined) {
@@ -508,11 +539,45 @@ Tell me what you need help with, or add a repayment notice. I’ll help you unde
   };
 
   const handleReplaceFile = (item: EvidenceItem) => {
-    setReplacingEvidenceItem(item);
     const inferredType: 'camera' | 'screenshot' | 'document' = 
       item.fileType?.includes('pdf') ? 'document' : 'screenshot';
+    if (isDemoScenario) {
+      setPendingUploadIntent({ type: inferredType, targetInst: null, replacingItem: item });
+      setIsSampleResetConfirmOpen(true);
+      return;
+    }
+    setReplacingEvidenceItem(item);
     setUploadModalType(inferredType);
     setIsUploadModalOpen(true);
+  };
+
+  const handleCancelSampleReset = () => {
+    setIsSampleResetConfirmOpen(false);
+    setPendingUploadIntent(null);
+  };
+
+  const handleConfirmSampleResetAndUpload = () => {
+    const intent = pendingUploadIntent;
+    setIsSampleResetConfirmOpen(false);
+    setPendingUploadIntent(null);
+    handleResetDemo();
+
+    if (intent) {
+      if (intent.replacingItem) {
+        setReplacingEvidenceItem(intent.replacingItem);
+      } else {
+        setReplacingEvidenceItem(null);
+      }
+      setUploadModalType(intent.type);
+      if (intent.targetInst !== undefined) {
+        if (intent.targetInst) {
+          updatePendingLenderRequest(intent.targetInst, 'conversation');
+        } else {
+          updatePendingLenderRequest(null, 'generic_upload');
+        }
+      }
+      setIsUploadModalOpen(true);
+    }
   };
 
   const handleAddEvidence = (
@@ -520,11 +585,23 @@ Tell me what you need help with, or add a repayment notice. I’ll help you unde
     choiceInfo?: { choice: 'use_detected' | 'upload_requested'; requestedInst?: string }
   ) => {
     let newEvidenceList = [...evidenceList];
-    const exists = newEvidenceList.some((e) => e.id === item.id);
-    if (exists) {
-      newEvidenceList = newEvidenceList.map((e) => (e.id === item.id ? item : e));
+    let newObligations = [...obligations];
+
+    // If sample scenario was active, clear demo pack first so real evidence is not silently mixed
+    if (isDemoScenario) {
+      setIsDemoScenario(false);
+      newEvidenceList = [item];
+      newObligations = [];
+      setAvailableCash(null);
+      setNextSalaryDate(null);
+      setNextSalaryAmount(null);
     } else {
-      newEvidenceList = [item, ...newEvidenceList];
+      const exists = newEvidenceList.some((e) => e.id === item.id);
+      if (exists) {
+        newEvidenceList = newEvidenceList.map((e) => (e.id === item.id ? item : e));
+      } else {
+        newEvidenceList = [item, ...newEvidenceList];
+      }
     }
     setEvidenceList(newEvidenceList);
 
@@ -533,8 +610,6 @@ Tell me what you need help with, or add a repayment notice. I’ll help you unde
     const prodName = item.userConfirmedDetails?.productName || item.extractedDetails?.productName || 'Loan Facility';
     const amount = item.userConfirmedDetails?.amountDue ?? item.extractedDetails?.amountDue;
     const dueDate = item.userConfirmedDetails?.dueDate || item.extractedDetails?.dueDate || '2026-08-25';
-
-    let newObligations = [...obligations];
 
     const categoryLower = (item.category || '').toLowerCase();
     const titleLower = (item.title || '').toLowerCase();
@@ -1477,6 +1552,7 @@ Tell me what you need help with, or add a repayment notice. I’ll help you unde
                     onReplaceFile={handleReplaceFile}
                     onRemoveEvidence={handleRemoveEvidence}
                     onLoadSampleScenario={handleToggleSampleScenario}
+                    onStartFreshWithOwnEvidence={handleResetDemo}
                     isFocusArea={focusTarget === 'EVIDENCE_ENTRY'}
                     isDemoScenario={isDemoScenario}
                   />
@@ -1517,6 +1593,7 @@ Tell me what you need help with, or add a repayment notice. I’ll help you unde
                   onReplaceFile={handleReplaceFile}
                   onRemoveEvidence={handleRemoveEvidence}
                   onLoadSampleScenario={handleToggleSampleScenario}
+                  onStartFreshWithOwnEvidence={handleResetDemo}
                   isDemoScenario={isDemoScenario}
                 />
               </div>
@@ -1752,6 +1829,8 @@ Tell me what you need help with, or add a repayment notice. I’ll help you unde
         }}
         onAddEvidence={handleAddEvidence}
         requestedInstitution={pendingEvidenceRequest?.institution || pendingRequestedLender || ''}
+        isDemoScenario={isDemoScenario}
+        onStartFreshWithOwnEvidence={handleResetDemo}
         onMismatchStateChange={(isMismatch) => {
           if (isMismatch) {
             setActivity({
@@ -1776,6 +1855,43 @@ Tell me what you need help with, or add a repayment notice. I’ll help you unde
         onSubmit={handleSaveFinancialContext}
         context={financialContext}
       />
+
+      {/* Use Your Own Evidence - Sample Reset Confirmation Dialog */}
+      {isSampleResetConfirmOpen && (
+        <div 
+          className="fixed inset-0 bg-stone-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="sample-reset-title"
+        >
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-stone-200 space-y-4">
+            <div className="space-y-2">
+              <h3 id="sample-reset-title" className="text-base font-bold text-stone-900">
+                Use your own evidence?
+              </h3>
+              <p className="text-xs text-stone-600 leading-relaxed">
+                You're currently using the guided sample. Starting with your own evidence will reset the sample scenario so FairAssist can analyse your information independently.
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={handleCancelSampleReset}
+                className="px-3.5 py-2 text-xs font-semibold text-stone-700 hover:text-stone-900 bg-stone-100 hover:bg-stone-200 rounded-xl transition-colors cursor-pointer"
+              >
+                Continue sample
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmSampleResetAndUpload}
+                className="px-3.5 py-2 text-xs font-semibold text-white bg-stone-900 hover:bg-stone-800 rounded-xl transition-colors cursor-pointer shadow-xs"
+              >
+                Start fresh with my evidence
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

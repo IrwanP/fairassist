@@ -199,7 +199,7 @@ export const EvidenceDetailModal: React.FC<EvidenceDetailModalProps> = ({
                   {item.title}
                 </h3>
                 {isPreloadedDemo ? (
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200/70">
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-800 border border-indigo-200/70">
                     Sample Evidence Pack
                   </span>
                 ) : (
