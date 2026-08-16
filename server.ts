@@ -960,6 +960,30 @@ app.post("/api/chat", apiRateLimiter(60, 60000), async (req, res) => {
 
     // Identify queries
     const isAskingBorrowing = lowerMsg.includes('borrow') || lowerMsg.includes('cover the gap') || lowerMsg.includes('new loan') || lowerMsg.includes('additional loan');
+    const isRegulatoryQuery =
+      /\b(ojk|pojk|seojk|slik|ideb|lpbbti)\b/i.test(lowerMsg) ||
+      lowerMsg.includes('debt collection') ||
+      lowerMsg.includes('collection rule') ||
+      lowerMsg.includes('collection regulation') ||
+      lowerMsg.includes('collection practice') ||
+      lowerMsg.includes('collection standard') ||
+      lowerMsg.includes('prohibited collection') ||
+      lowerMsg.includes('penagihan') ||
+      lowerMsg.includes('consumer protection') ||
+      lowerMsg.includes('perlindungan konsumen') ||
+      lowerMsg.includes('borrower rights') ||
+      lowerMsg.includes('my rights') ||
+      lowerMsg.includes('legal rights') ||
+      lowerMsg.includes('statutory rights') ||
+      lowerMsg.includes('hak peminjam') ||
+      lowerMsg.includes('hak konsumen') ||
+      lowerMsg.includes('lender policy') ||
+      lowerMsg.includes('lender obligation') ||
+      lowerMsg.includes('riplay') ||
+      lowerMsg.includes('compliance') ||
+      (lowerMsg.includes('rule') && (lowerMsg.includes('collection') || lowerMsg.includes('regulation') || lowerMsg.includes('law') || lowerMsg.includes('apply') || lowerMsg.includes('legal'))) ||
+      (lowerMsg.includes('regulation') && !lowerMsg.includes('recommend'));
+
     const isAskingPrioritisationOrInfo =
       lowerMsg.includes('what other information') ||
       lowerMsg.includes('what information do you need') ||
@@ -1238,7 +1262,8 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
    - If user asks to add evidence for a new lender, acknowledge politely, ask them to add the repayment notice, state that you won't assume amount or due date until confirmed, and DO NOT offer premature debt restructuring or contact advice.
 
 2. SITUATION-SPECIFIC GUIDANCE:
-   - If NO evidence or obligations are present: Politely explain that you need their first repayment notice, or the lender, amount due, and due date to start.
+   - If the user asks about regulations, OJK rules, debt collection standards, borrower rights, lender policies, or dispute escalation: Answer the regulatory question directly and thoroughly with grounded Indonesian regulatory facts (delegating to regulatory_retrieval_agent). General regulatory and consumer protection questions do NOT require repayment notices or borrower financial facts before explaining applicable rules.
+   - If the user is seeking repayment planning, debt prioritisation, or cash-flow allocation advice but NO evidence or obligations are present: Politely explain that you need their first repayment notice, or the lender, amount due, and due date to start.
    - If SALARY ONLY is confirmed (0 obligations): State that salary is confirmed at ${salaryStr}, and that repayment notice(s) and available cash are still needed to analyse cash flow.
    - If OBLIGATIONS EXIST BUT CASH/SALARY IS MISSING: Acknowledge confirmed obligations, state that available cash, next salary date, and expected salary amount are needed to compare against cash flow. Mention essential expenses can also be added.
    - If USER ASKS ABOUT BORROWING (new loan): State that while borrowing mathematically covers the pre-salary gap, it does not resolve debt—it creates an additional repayment obligation with lender-dependent fees and terms. Recommend exploring non-debt alternatives like contacting the earliest lender to ask if repayment can move to payday, noting that any date change requires explicit lender confirmation.
@@ -1260,7 +1285,9 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
     // 4. Deterministic Fallback Response (for offline / non-API environments)
     let fallbackReply = `### What I found\n\nYou have an active repayment obligation coming due.\n\n### What it means\n\nContacting your lender before your due date allows you to inquire about payment alignment choices. Any repayment date change depends on lender terms and requires explicit lender confirmation; otherwise the original verified obligation and due date remain applicable.\n\n### Next step\n\n1. Contact customer support before your due date.\n2. Inquire about available repayment choices.\n3. Avoid taking new secondary P2P debt.`;
 
-    if (obligationCount === 0 && evidenceCount === 0 && !hasSalaryConfirmed) {
+    if (isRegulatoryQuery) {
+      fallbackReply = `### What I found\nUnder OJK regulations (**POJK No. 40 Tahun 2024** and **SEOJK No. 19/SEOJK.06/2025**), LPBBTI (P2P digital lending) providers and collection agents must follow strict consumer protection and debt collection standards.\n\n### What it means\nKey collection standards and borrower protections include:\n• Collection practices must be ethical, without intimidation, threats, physical violence, or harassment.\n• Direct collection communications are restricted to 08:00 to 20:00 local borrower time.\n• Debt collectors are strictly prohibited from contacting third parties or emergency contacts not legally bound to the debt obligation.\n• Lenders are held legally responsible for the conduct of third-party collection partners.\n• Repayment history is recorded in the OJK SLIK credit registry across Collectibility 1–5.\n\n### Next step\n1. Check your lender’s official customer service and dispute channels.\n2. If you experience collection violations, you can file a complaint with OJK via Kontak 157 (konsumen.ojk.go.id).\n3. Any repayment arrangement or extension remains subject to lender confirmation.`;
+    } else if (obligationCount === 0 && evidenceCount === 0 && !hasSalaryConfirmed) {
       const greeting = isDemo ? "Hello, Ayu.\n\n" : "";
       fallbackReply = `${greeting}I can help, but I need a little more information first.\n\nUpload your first repayment notice, or tell me the lender, amount due and due date.\n\nLet’s start with your first repayment notice.`;
     } else if (obligationCount === 0 && hasSalaryConfirmed) {
@@ -1326,11 +1353,12 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
         executionMetadata: {
           agent: FAIRASSIST_ROOT_AGENT_NAME,
           framework: "@google/adk",
-          phase: "PHASE_1_ROOT_AGENT",
+          phase: isRegulatoryQuery ? "PHASE_2A_REGULATORY_AGENT" : "PHASE_1_ROOT_AGENT",
           adkBacked: false,
+          delegatedAgents: isRegulatoryQuery ? ["regulatory_retrieval_agent"] : [],
           status: "fallback"
         },
-        retrievedSources,
+        retrievedSources: isRegulatoryQuery ? retrievedSources : [],
         nextBestActions,
         pipelineActivity
       });
@@ -1342,7 +1370,8 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
       agent: FAIRASSIST_ROOT_AGENT_NAME,
       framework: "@google/adk",
       phase: "PHASE_1_ROOT_AGENT",
-      adkBacked: true
+      adkBacked: true,
+      delegatedAgents: []
     };
 
     try {
@@ -1351,7 +1380,11 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
         userId: isDemo ? "Ayu" : "borrower_user",
         sessionId: isDemo ? "fairassist_sample_session" : "fairassist_normal_session"
       });
-      adkReplyText = adkResult.text || fallbackReply;
+      if (adkResult.text && adkResult.text.trim().length > 0) {
+        adkReplyText = adkResult.text;
+      } else {
+        adkReplyText = fallbackReply;
+      }
       executionMeta = adkResult.metadata;
     } catch (adkErr: any) {
       console.warn("ADK root agent execution encountered issue, falling back to deterministic safe response:", adkErr?.message || adkErr);
@@ -1359,16 +1392,30 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
       executionMeta = {
         agent: FAIRASSIST_ROOT_AGENT_NAME,
         framework: "@google/adk",
-        phase: "PHASE_1_ROOT_AGENT",
+        phase: isRegulatoryQuery ? "PHASE_2A_REGULATORY_AGENT" : "PHASE_1_ROOT_AGENT",
         adkBacked: false,
+        delegatedAgents: isRegulatoryQuery ? ["regulatory_retrieval_agent"] : [],
         status: "fallback"
       };
     }
 
+    const hasRegulatoryDelegated =
+      (Array.isArray(executionMeta.delegatedAgents) && executionMeta.delegatedAgents.includes("regulatory_retrieval_agent")) ||
+      executionMeta.phase === "PHASE_2A_REGULATORY_AGENT";
+
+    const finalRetrievedSources = hasRegulatoryDelegated ? retrievedSources : [];
+
     return res.json({
       reply: adkReplyText,
-      executionMetadata: executionMeta,
-      retrievedSources,
+      executionMetadata: {
+        agent: FAIRASSIST_ROOT_AGENT_NAME,
+        framework: "@google/adk",
+        phase: hasRegulatoryDelegated ? "PHASE_2A_REGULATORY_AGENT" : "PHASE_1_ROOT_AGENT",
+        adkBacked: executionMeta.adkBacked ?? true,
+        delegatedAgents: hasRegulatoryDelegated ? ["regulatory_retrieval_agent"] : [],
+        ...(executionMeta.status ? { status: executionMeta.status } : {})
+      },
+      retrievedSources: finalRetrievedSources,
       nextBestActions,
       pipelineActivity
     });

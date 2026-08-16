@@ -1,15 +1,18 @@
 /**
- * FairAssist - Root Google ADK Agent (Phase 1)
+ * FairAssist - Root Google ADK Agent (Phase 2A)
  *
  * Establishes the foundational Google Agent Development Kit (ADK) root agent
- * for FairAssist using the official ADK LlmAgent.
+ * for FairAssist using the official ADK LlmAgent, orchestrating specialized
+ * sub-agents including the Regulatory Retrieval Agent.
  *
- * Note: Specialised sub-agents (Evidence Analysis, Regulatory Retrieval,
- * Financial Reasoning, Action) will be introduced in subsequent phases.
  * This agent does not automatically execute or bind to the UI at startup.
  */
 
 import { LlmAgent, InMemoryRunner, stringifyContent } from '@google/adk';
+import {
+  REGULATORY_RETRIEVAL_AGENT_NAME,
+  regulatoryRetrievalAgent,
+} from './regulatoryRetrievalAgent';
 
 export const FAIRASSIST_ROOT_AGENT_NAME = 'fairassist_root_agent';
 export const FAIRASSIST_ROOT_AGENT_DESCRIPTION =
@@ -17,6 +20,13 @@ export const FAIRASSIST_ROOT_AGENT_DESCRIPTION =
 
 export const FAIRASSIST_ROOT_AGENT_INSTRUCTION = `You are the FairAssist root decision-support agent.
 FairAssist provides evidence-grounded financial decision support for Indonesian consumers managing repayment pressures and credit obligations.
+
+You are the primary conversational orchestrator. You have access to a specialized sub-agent:
+- regulatory_retrieval_agent: Specializes in retrieving and grounding Indonesian financial regulations (e.g. POJK 22/2023, POJK 40/2024, SEOJK 19/2025, OJK SLIK credit reporting), lender policies, and borrower statutory rights.
+
+Delegation Rule:
+- ONLY delegate to regulatory_retrieval_agent (using transfer_to_agent) when the user query explicitly asks about, requires, or references Indonesian financial regulations (OJK, POJK, SEOJK, SLIK credit scoring), lender regulatory policies/RIPLAY, LPBBTI debt-collection rules, borrower legal/statutory rights, prohibited collection practices, or institutional dispute mechanisms.
+- Do NOT delegate for conversational queries, asking what information or evidence is needed, repayment planning coordination, prioritisation questions (such as "Which repayment should I prioritise first?", "What information do you need before recommending priority?"), cash-flow questions, or evidence uploads. Answer all non-regulatory queries directly as the root orchestrator.
 
 Core Principles and Operating Boundaries:
 1. Decision Support, Not Autonomous Decisions:
@@ -48,6 +58,7 @@ export function createFairAssistRootAgent(): LlmAgent {
     description: FAIRASSIST_ROOT_AGENT_DESCRIPTION,
     model: 'gemini-3.5-flash',
     instruction: FAIRASSIST_ROOT_AGENT_INSTRUCTION,
+    subAgents: [regulatoryRetrievalAgent],
   });
 }
 
@@ -63,6 +74,7 @@ export interface FairAssistAgentExecutionResult {
     framework: string;
     phase: string;
     adkBacked: boolean;
+    delegatedAgents?: string[];
     version?: string;
     timestamp?: string;
   };
@@ -89,6 +101,7 @@ export async function runFairAssistRootAgent(
     : userPrompt;
 
   let combinedText = '';
+  const executedAgents = new Set<string>();
 
   for await (const event of runner.runEphemeral({
     userId: options?.userId || 'fairassist_user',
@@ -97,27 +110,43 @@ export async function runFairAssistRootAgent(
       parts: [{ text: fullPrompt }],
     },
   })) {
-    if (event.author !== 'user') {
-      const text = stringifyContent(event);
-      if (text) {
-        combinedText += text;
-      } else if (event.content?.parts) {
-        for (const part of event.content.parts) {
-          if (part.text && !part.thought) {
-            combinedText += part.text;
-          }
+    if (event.author && event.author !== 'user') {
+      executedAgents.add(event.author);
+      let text = stringifyContent(event);
+      if (!text && event.content) {
+        let contentObj: any = event.content;
+        if (typeof contentObj === 'string') {
+          try {
+            contentObj = JSON.parse(contentObj);
+          } catch {}
+        }
+        if (contentObj?.parts && Array.isArray(contentObj.parts)) {
+          text = contentObj.parts
+            .filter((p: any) => !p.thought && typeof p.text === 'string')
+            .map((p: any) => p.text)
+            .join('');
         }
       }
+      if (text) {
+        combinedText += text;
+      }
+    }
+
+    if (event.actions?.transferToAgent) {
+      executedAgents.add(event.actions.transferToAgent);
     }
   }
+
+  const isRegulatoryExecuted = executedAgents.has(REGULATORY_RETRIEVAL_AGENT_NAME);
 
   return {
     text: combinedText.trim(),
     metadata: {
       agent: FAIRASSIST_ROOT_AGENT_NAME,
       framework: '@google/adk',
-      phase: 'PHASE_1_ROOT_AGENT',
+      phase: isRegulatoryExecuted ? 'PHASE_2A_REGULATORY_AGENT' : 'PHASE_1_ROOT_AGENT',
       adkBacked: true,
+      delegatedAgents: isRegulatoryExecuted ? [REGULATORY_RETRIEVAL_AGENT_NAME] : [],
     },
   };
 }
