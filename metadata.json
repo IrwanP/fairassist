@@ -1,6 +1,6 @@
 {
   "name": "FairAssist",
   "description": "Evidence-grounded AI financial decision support for Indonesian consumers.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

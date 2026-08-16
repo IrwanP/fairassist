@@ -1,9 +1,11 @@
 /**
- * FairAssist - Root Google ADK Agent (Phase 2A)
+ * FairAssist - Root Google ADK Agent (Phase 2B)
  *
  * Establishes the foundational Google Agent Development Kit (ADK) root agent
- * for FairAssist using the official ADK LlmAgent, orchestrating specialized
- * sub-agents including the Regulatory Retrieval Agent.
+ * for FairAssist using the official ADK LlmAgent, orchestrating specialised
+ * sub-agents:
+ * 1. regulatory_retrieval_agent (Phase 2A): Grounds Indonesian regulations and lender policies
+ * 2. multimodal_evidence_agent (Phase 2B): Analyses user-provided financial evidence multimodally
  *
  * This agent does not automatically execute or bind to the UI at startup.
  */
@@ -13,6 +15,13 @@ import {
   REGULATORY_RETRIEVAL_AGENT_NAME,
   regulatoryRetrievalAgent,
 } from './regulatoryRetrievalAgent';
+import {
+  MULTIMODAL_EVIDENCE_AGENT_NAME,
+  multimodalEvidenceAgent,
+  getLatestRecordedEvidence,
+  clearLatestRecordedEvidence,
+  type MultimodalExtractedEvidence,
+} from './multimodalEvidenceAgent';
 
 export const FAIRASSIST_ROOT_AGENT_NAME = 'fairassist_root_agent';
 export const FAIRASSIST_ROOT_AGENT_DESCRIPTION =
@@ -21,12 +30,14 @@ export const FAIRASSIST_ROOT_AGENT_DESCRIPTION =
 export const FAIRASSIST_ROOT_AGENT_INSTRUCTION = `You are the FairAssist root decision-support agent.
 FairAssist provides evidence-grounded financial decision support for Indonesian consumers managing repayment pressures and credit obligations.
 
-You are the primary conversational orchestrator. You have access to a specialized sub-agent:
-- regulatory_retrieval_agent: Specializes in retrieving and grounding Indonesian financial regulations (e.g. POJK 22/2023, POJK 40/2024, SEOJK 19/2025, OJK SLIK credit reporting), lender policies, and borrower statutory rights.
+You are the primary conversational orchestrator. You have access to specialized sub-agents:
+1. regulatory_retrieval_agent: Specializes in retrieving and grounding Indonesian financial regulations (e.g. POJK 22/2023, POJK 40/2024, SEOJK 19/2025, OJK SLIK credit reporting), lender policies, and borrower statutory rights.
+2. multimodal_evidence_agent: Specializes in analysing user-provided financial evidence (repayment notice photographs, screenshots, mobile app repayment screens, bank/lender notices, salary slips, and PDF documents) using multimodal reasoning.
 
-Delegation Rule:
+Delegation Rules:
+- When a user uploads or provides an evidence file, screenshot, repayment notice, or document for visual/multimodal analysis, delegate to multimodal_evidence_agent using transfer_to_agent.
 - ONLY delegate to regulatory_retrieval_agent (using transfer_to_agent) when the user query explicitly asks about, requires, or references Indonesian financial regulations (OJK, POJK, SEOJK, SLIK credit scoring), lender regulatory policies/RIPLAY, LPBBTI debt-collection rules, borrower legal/statutory rights, prohibited collection practices, or institutional dispute mechanisms.
-- Do NOT delegate for conversational queries, asking what information or evidence is needed, repayment planning coordination, prioritisation questions (such as "Which repayment should I prioritise first?", "What information do you need before recommending priority?"), cash-flow questions, or evidence uploads. Answer all non-regulatory queries directly as the root orchestrator.
+- Do NOT delegate for conversational queries, asking what information or evidence is needed, repayment planning coordination, prioritisation questions (such as "Which repayment should I prioritise first?", "What information do you need before recommending priority?"), cash-flow questions, or general guidance. Answer all non-regulatory and non-evidence queries directly as the root orchestrator.
 
 Core Principles and Operating Boundaries:
 1. Decision Support, Not Autonomous Decisions:
@@ -58,7 +69,7 @@ export function createFairAssistRootAgent(): LlmAgent {
     description: FAIRASSIST_ROOT_AGENT_DESCRIPTION,
     model: 'gemini-3.5-flash',
     instruction: FAIRASSIST_ROOT_AGENT_INSTRUCTION,
-    subAgents: [regulatoryRetrievalAgent],
+    subAgents: [regulatoryRetrievalAgent, multimodalEvidenceAgent],
   });
 }
 
@@ -69,28 +80,46 @@ export const fairAssistRootAgent = createFairAssistRootAgent();
 
 export interface FairAssistAgentExecutionResult {
   text: string;
+  structuredEvidence?: MultimodalExtractedEvidence | null;
   metadata: {
     agent: string;
     framework: string;
     phase: string;
     adkBacked: boolean;
-    delegatedAgents?: string[];
+    delegatedAgents: string[];
     version?: string;
     timestamp?: string;
   };
 }
 
+export interface RunAgentOptions {
+  userId?: string;
+  sessionId?: string;
+  systemContext?: string;
+  evidenceFile?: {
+    inlineData: {
+      mimeType: string;
+      data: string;
+    };
+    fileName?: string;
+    evidenceType?: string;
+    uploadId?: string;
+    fileHash?: string;
+    evidenceId?: string;
+    analysisRequestId?: string;
+  };
+}
+
 /**
- * Executes the FairAssist root ADK agent with InMemoryRunner for live conversational guidance.
+ * Executes the FairAssist root ADK agent with InMemoryRunner for live conversational guidance
+ * or multimodal evidence interpretation.
  */
 export async function runFairAssistRootAgent(
   userPrompt: string,
-  options?: {
-    userId?: string;
-    sessionId?: string;
-    systemContext?: string;
-  }
+  options?: RunAgentOptions
 ): Promise<FairAssistAgentExecutionResult> {
+  clearLatestRecordedEvidence();
+
   const runner = new InMemoryRunner({
     agent: fairAssistRootAgent,
     appName: 'FairAssist',
@@ -100,14 +129,27 @@ export async function runFairAssistRootAgent(
     ? `${options.systemContext}\n\nUser Query:\n${userPrompt}`
     : userPrompt;
 
+  const messageParts: any[] = [{ text: fullPrompt }];
+
+  if (options?.evidenceFile?.inlineData?.data) {
+    messageParts.push({
+      inlineData: {
+        mimeType: options.evidenceFile.inlineData.mimeType || 'image/png',
+        data: options.evidenceFile.inlineData.data,
+      },
+    });
+  }
+
   let combinedText = '';
   const executedAgents = new Set<string>();
+
+  let fallbackStructured: any = null;
 
   for await (const event of runner.runEphemeral({
     userId: options?.userId || 'fairassist_user',
     newMessage: {
       role: 'user',
-      parts: [{ text: fullPrompt }],
+      parts: messageParts,
     },
   })) {
     if (event.author && event.author !== 'user') {
@@ -125,6 +167,12 @@ export async function runFairAssistRootAgent(
             .filter((p: any) => !p.thought && typeof p.text === 'string')
             .map((p: any) => p.text)
             .join('');
+
+          for (const p of contentObj.parts) {
+            if (p.functionCall?.name === 'record_extracted_evidence' && p.functionCall.args) {
+              fallbackStructured = p.functionCall.args;
+            }
+          }
         }
       }
       if (text) {
@@ -137,16 +185,65 @@ export async function runFairAssistRootAgent(
     }
   }
 
+  const isMultimodalExecuted =
+    executedAgents.has(MULTIMODAL_EVIDENCE_AGENT_NAME) ||
+    Boolean(options?.evidenceFile?.inlineData?.data);
   const isRegulatoryExecuted = executedAgents.has(REGULATORY_RETRIEVAL_AGENT_NAME);
+
+  let phase = 'PHASE_1_ROOT_AGENT';
+  let delegatedAgents: string[] = [];
+
+  if (isMultimodalExecuted) {
+    phase = 'PHASE_2B_MULTIMODAL_EVIDENCE_AGENT';
+    delegatedAgents = [MULTIMODAL_EVIDENCE_AGENT_NAME];
+  } else if (isRegulatoryExecuted) {
+    phase = 'PHASE_2A_REGULATORY_AGENT';
+    delegatedAgents = [REGULATORY_RETRIEVAL_AGENT_NAME];
+  }
+
+  let structured = getLatestRecordedEvidence();
+  if (!structured && fallbackStructured) {
+    let parsedAmountDue: number | null = null;
+    if (typeof fallbackStructured.amountDue === 'number' && !isNaN(fallbackStructured.amountDue)) {
+      parsedAmountDue = fallbackStructured.amountDue;
+    } else if (typeof fallbackStructured.amountDue === 'string') {
+      const clean = fallbackStructured.amountDue.replace(/[^0-9.]/g, '');
+      if (clean) {
+        const num = parseFloat(clean);
+        if (!isNaN(num)) parsedAmountDue = num;
+      }
+    }
+
+    structured = {
+      category: fallbackStructured.category || 'Bank repayment notification',
+      categoryConfidence: fallbackStructured.categoryConfidence || 'High',
+      institution: fallbackStructured.institution || 'Needs confirmation',
+      institutionLegalName: fallbackStructured.institutionLegalName || null,
+      product: fallbackStructured.product || 'Bank Repayment Notice',
+      title: fallbackStructured.title || 'Uploaded Evidence',
+      amountDue: parsedAmountDue,
+      dueDate: fallbackStructured.dueDate || null,
+      accountOrFacility: fallbackStructured.accountOrFacility || null,
+      obligationStatus: fallbackStructured.obligationStatus || 'ACTIVE_OBLIGATION',
+      confidence: fallbackStructured.confidence || 'High',
+      summaryStatement: fallbackStructured.summaryStatement || '',
+      extractedNotes: fallbackStructured.extractedNotes || '',
+      extractedFacts: Array.isArray(fallbackStructured.extractedFacts) ? fallbackStructured.extractedFacts : [],
+      missingFields: Array.isArray(fallbackStructured.missingFields) ? fallbackStructured.missingFields : [],
+      ambiguities: Array.isArray(fallbackStructured.ambiguities) ? fallbackStructured.ambiguities : [],
+      uncertainFields: Array.isArray(fallbackStructured.uncertainFields) ? fallbackStructured.uncertainFields : [],
+    };
+  }
 
   return {
     text: combinedText.trim(),
+    structuredEvidence: structured,
     metadata: {
       agent: FAIRASSIST_ROOT_AGENT_NAME,
       framework: '@google/adk',
-      phase: isRegulatoryExecuted ? 'PHASE_2A_REGULATORY_AGENT' : 'PHASE_1_ROOT_AGENT',
+      phase,
       adkBacked: true,
-      delegatedAgents: isRegulatoryExecuted ? [REGULATORY_RETRIEVAL_AGENT_NAME] : [],
+      delegatedAgents,
     },
   };
 }

@@ -8,6 +8,9 @@ import {
   runFairAssistRootAgent,
   FAIRASSIST_ROOT_AGENT_NAME,
 } from "./src/agents/fairAssistAgent";
+import {
+  MULTIMODAL_EVIDENCE_AGENT_NAME,
+} from "./src/agents/multimodalEvidenceAgent";
 
 dotenv.config();
 
@@ -67,7 +70,7 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", app: "FairAssist", timestamp: new Date().toISOString() });
 });
 
-// 1b. Multimodal Evidence Analysis Endpoint (Gemini Document & Image Parser)
+// 1b. Multimodal Evidence Analysis Endpoint (Google ADK Multimodal Evidence Sub-Agent)
 app.post("/api/analyze-evidence", apiRateLimiter(30, 60000), async (req, res) => {
   try {
     const body = req.body || {};
@@ -76,8 +79,6 @@ app.post("/api/analyze-evidence", apiRateLimiter(30, 60000), async (req, res) =>
     if (!fileBase64 && !fileName && !evidenceId) {
       return res.status(400).json({ error: "Missing required evidence payload." });
     }
-
-    const ai = getGeminiClient();
 
     const activeEvId = evidenceId || `ev-custom-${Date.now()}`;
     const activeReqId = analysisRequestId || `req-${Date.now()}`;
@@ -93,104 +94,59 @@ app.post("/api/analyze-evidence", apiRateLimiter(30, 60000), async (req, res) =>
 
     if (process.env.GEMINI_API_KEY && cleanBase64.length > 50) {
       try {
-        const systemInstruction = `
-You are FairAssist's Multimodal Financial Evidence Analyzer.
-PHASE 1 - DOCUMENT-ONLY EXTRACTION:
-Analyse ONLY the supplied evidence file. Do NOT use previous conversation, previous financial context, Sample Scenario data, or assumptions to fill missing information. Extract only information that is visibly supported by this specific file. If a field is absent or unreadable, return null. Never substitute an existing known institution when the file shows another institution!
+        const userPrompt = `Please analyse this ${evidenceType || 'financial evidence'} file (${fileName || 'uploaded_evidence'}).
+Perform multimodal visual analysis over the visible document content: bank/lender logos, figures, labels, due dates, and product names.
+Transfer to multimodal_evidence_agent to record the structured extraction using record_extracted_evidence.
+Do NOT invent missing information. Distinguish CONFIRMED, UNCERTAIN, and MISSING fields.`;
 
-Use British English throughout (e.g. analyse, authorised, licence, instalment).
-
-VISUAL EXTRACTION & CLASSIFICATION RULES:
-1. Carefully inspect the visual image content for bank logos, institution names, app header text, figures, due dates, product names, and facility references.
-2. If the document/screenshot visibly represents Bank Central Asia or BCA:
-   - Category: "Bank repayment notification"
-   - Institution: "Bank Central Asia (BCA)"
-   - Institution Legal Name: "PT Bank Central Asia Tbk"
-   - Product: "Kredit Tanpa Agunan" or "Personal Loan"
-3. If the evidence relates to Bank Mandiri:
-   - Category: "Bank repayment notification"
-   - Institution: "Bank Mandiri"
-   - Institution Legal Name: "PT Bank Mandiri (Persero) Tbk"
-   - Product: "Kredit Tanpa Agunan"
-4. If the evidence relates to EasyCash (PT Indonesia Fintopia Tech):
-   - Category: "Pindar app repayment screenshot"
-   - Institution: "EasyCash (PT Indonesia Fintopia Tech)"
-   - Institution Legal Name: "PT Indonesia Fintopia Tech"
-   - Product: "LPBBTI Overdue Collection Notice"
-5. If the evidence relates to AdaKami:
-   - Category: "Pindar app repayment screenshot"
-   - Institution: "AdaKami (PT Pembiayaan Digital Indonesia)"
-   - Institution Legal Name: "PT Pembiayaan Digital Indonesia"
-   - Product: "LPBBTI Short-term Loan"
-6. If the evidence relates to a payslip, salary slip, or payroll document (e.g. PT Nusantara Digital):
-   - Category: "Other financial evidence"
-   - Institution: Employer name (e.g. "PT Nusantara Digital")
-   - Institution Legal Name: "PT Nusantara Digital"
-   - Product: "Payroll / Salary Slip"
-   - Title: "Salary Slip - PT Nusantara Digital"
-   - IMPORTANT: Extract NET SALARY / NET PAY as amountDue (e.g. 8500000 for Net Salary Rp8,500,000, NOT Basic Salary Rp9,000,000)
-   - Extract Payment Date as dueDate (e.g. "28 Aug 2026")
-   - obligationStatus: "INFORMATIONAL"
-   - confidence: "High"
-7. If institution identity is uncertain, unreadable, or missing, set institution to "Needs confirmation" and confidence to "Needs review". NEVER default to Bank Mandiri, AdaKami, or any other institution if not clearly supported by visual evidence.
-
-Return JSON matching this EXACT schema:
-{
-  "uploadId": "${activeUploadId}",
-  "fileHash": "${activeFileHash}",
-  "evidenceId": "${activeEvId}",
-  "analysisRequestId": "${activeReqId}",
-  "category": "Bank repayment notification" | "Pindar app repayment screenshot" | "Bank statement" | "iDeb SLIK – Debitur Perseorangan" | "Repayment or borrowing offer" | "Other financial evidence",
-  "categoryConfidence": "High" | "Medium" | "Low",
-  "institution": "Bank Central Asia (BCA)" | "AdaKami" | "Bank Mandiri" | "Bank Rakyat Indonesia (BRI)" | "EasyCash" | "Kredit Pintar" | "OJK SLIK" | "Needs confirmation" | "Other Institution",
-  "institutionLegalName": "Legal name of entity or null",
-  "product": "Personal Loan" | "Kredit Tanpa Agunan" | "LPBBTI Short-term Loan" | "LPBBTI Overdue Collection Notice" | "Payroll Account Statement" | "iDeb Credit Report" | "Consumer Facility" | "Financial Document",
-  "title": "Short descriptive evidence title",
-  "amountDue": number_or_null,
-  "dueDate": "YYYY-MM-DD or formatted date string or null",
-  "accountOrFacility": "Masked account number or reference string or null",
-  "obligationStatus": "ACTIVE_OBLIGATION" | "COLLECTION_NOTICE" | "HISTORICAL" | "INFORMATIONAL",
-  "confidence": "High" | "Medium" | "Low" | "Needs review",
-  "summaryStatement": "A concise, single-sentence summary of what Gemini understood from the file",
-  "extractedNotes": "Key extracted notes or text from document",
-  "uncertainFields": []
-}
-`;
-
-        const response = await ai.models.generateContent({
-          model: "gemini-3.6-flash",
-          contents: [
-            {
-              inlineData: {
-                data: cleanBase64,
-                mimeType: effectiveMimeType,
-              },
+        const adkResult = await runFairAssistRootAgent(userPrompt, {
+          userId: "fairassist_user",
+          sessionId: `evidence_session_${activeEvId}`,
+          evidenceFile: {
+            inlineData: {
+              mimeType: effectiveMimeType,
+              data: cleanBase64,
             },
-            `Analyse this ${evidenceType || 'financial evidence'} file (${fileName || 'uploaded_evidence'}) strictly from its visible content.`,
-          ],
-          config: {
-            systemInstruction,
-            responseMimeType: "application/json",
-          },
-        });
-
-        const parsed = JSON.parse(response.text || "{}");
-        if (parsed && parsed.category) {
-          return res.json({
-            ...parsed,
+            fileName,
+            evidenceType,
             uploadId: activeUploadId,
             fileHash: activeFileHash,
             evidenceId: activeEvId,
             analysisRequestId: activeReqId,
+          },
+        });
+
+        let extracted: any = adkResult.structuredEvidence;
+
+        if (!extracted && adkResult.text) {
+          try {
+            const jsonMatch = adkResult.text.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              const parsed = JSON.parse(jsonMatch[0]);
+              if (parsed && (parsed.category || parsed.institution)) {
+                extracted = parsed;
+              }
+            }
+          } catch {}
+        }
+
+        if (extracted && (extracted.category || extracted.institution)) {
+          return res.json({
+            ...extracted,
+            uploadId: activeUploadId,
+            fileHash: activeFileHash,
+            evidenceId: activeEvId,
+            analysisRequestId: activeReqId,
+            executionMetadata: adkResult.metadata,
           });
         }
       } catch (geminiErr) {
-        console.warn("Gemini multimodal analysis error, falling back to unverified review state:", geminiErr);
+        console.warn("Google ADK multimodal evidence agent error, falling back to unverified review state:", geminiErr);
       }
     }
 
-    // Honest unverified review state when Gemini is unavailable or fails
-    // Never fabricate arbitrary amounts or institutions based on filename substrings
+    // Honest unverified review state when Gemini/ADK is unavailable or fails
+    // Never fabricate arbitrary amounts or institutions
     return res.json({
       uploadId: activeUploadId,
       fileHash: activeFileHash,
@@ -207,9 +163,19 @@ Return JSON matching this EXACT schema:
       accountOrFacility: null,
       obligationStatus: "INFORMATIONAL",
       confidence: "Needs review",
-      summaryStatement: "Gemini analysis could not automatically extract details from this file. Please review and confirm the extracted details manually.",
+      summaryStatement: "Analysis could not automatically extract details from this file. Please review and confirm the extracted details manually.",
       extractedNotes: "Details could not be automatically verified. Please confirm manually.",
       uncertainFields: ["institution", "product", "amountDue", "dueDate"],
+      extractedFacts: [],
+      missingFields: ["institution", "amountDue", "dueDate"],
+      ambiguities: [],
+      executionMetadata: {
+        agent: FAIRASSIST_ROOT_AGENT_NAME,
+        framework: "@google/adk",
+        phase: "PHASE_2B_MULTIMODAL_EVIDENCE_AGENT",
+        adkBacked: true,
+        delegatedAgents: [MULTIMODAL_EVIDENCE_AGENT_NAME],
+      },
     });
 
   } catch (err: any) {
