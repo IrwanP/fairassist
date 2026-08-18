@@ -206,6 +206,7 @@ export const EvidenceUploadModal: React.FC<EvidenceUploadModalProps> = ({
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
+    setCameraStatus('idle');
   };
 
   const startCamera = async () => {

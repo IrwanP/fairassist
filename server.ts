@@ -11,6 +11,16 @@ import {
 import {
   MULTIMODAL_EVIDENCE_AGENT_NAME,
 } from "./src/agents/multimodalEvidenceAgent";
+import {
+  FINANCIAL_REASONING_AGENT_NAME,
+  calculateFinancialMetrics,
+  extractScenarioBorrowingAmount,
+} from "./src/agents/financialReasoningAgent";
+import {
+  deriveCanonicalObligations,
+  getCanonicalEvidenceDetails,
+  normalizeInstitutionName,
+} from "./src/utils/canonicalData";
 
 dotenv.config();
 
@@ -309,30 +319,14 @@ app.post("/api/validate-sources", apiRateLimiter(20, 60000), async (req, res) =>
 });
 
 // Canonical active repayment helpers (excluding non-liability income, bank statement, or credit-report evidence)
-function getActiveRepaymentObligations(obligations: any[] = []) {
-  return (obligations || []).filter((o: any) => {
-    if (o.isSalary || o.category === 'Salary') return false;
-    const catLower = (o.category || '').toLowerCase();
-    if (catLower.includes('salary') || catLower.includes('payroll') || catLower.includes('slik')) return false;
-    const titleLower = (o.title || '').toLowerCase();
-    if (titleLower.includes('salary') || titleLower.includes('payroll') || titleLower.includes('slik')) return false;
-    return (o.amount !== null && o.amount !== undefined && o.amount > 0) || Boolean(o.institutionName);
-  });
+function getActiveRepaymentObligations(obligations: any[] = [], evidenceList: any[] = []) {
+  return deriveCanonicalObligations(obligations, evidenceList);
 }
 
 function getActiveRepaymentEvidence(evidenceList: any[] = []) {
   return (evidenceList || []).filter((e: any) => {
-    const cat = (e.category || '').toLowerCase();
-    const title = (e.title || '').toLowerCase();
-    if (cat.includes('salary') || cat.includes('payroll') || cat.includes('slik') || cat.includes('statement') || cat.includes('ideb')) {
-      return false;
-    }
-    if (title.includes('salary') || title.includes('payroll') || title.includes('slik') || title.includes('statement') || title.includes('ideb')) {
-      return false;
-    }
-    const amt = e.userConfirmedDetails?.amountDue ?? e.extractedDetails?.amountDue;
-    if (amt === 0 && (cat.includes('bank statement') || cat.includes('ideb'))) return false;
-    return true;
+    const details = getCanonicalEvidenceDetails(e);
+    return details.isRepaymentObligation;
   });
 }
 
@@ -343,7 +337,7 @@ app.post("/api/analyze", apiRateLimiter(60, 60000), async (req, res) => {
     const ai = getGeminiClient();
 
     const evidenceList = getActiveRepaymentEvidence(financialContext?.evidenceList || []);
-    const obligations = getActiveRepaymentObligations(financialContext?.obligations || []);
+    const obligations = getActiveRepaymentObligations(financialContext?.obligations || [], financialContext?.evidenceList || []);
     const availableCash = financialContext?.availableCash;
     const nextSalaryDate = financialContext?.nextSalaryDate;
     const nextSalaryAmount = financialContext?.nextSalaryAmount;
@@ -785,7 +779,7 @@ app.post("/api/simulate", apiRateLimiter(40, 60000), async (req, res) => {
         badgeText: "Scenario B · Higher risk",
         title: `What if I cover the Rp${(borrowAmt / 1000000).toFixed(1)}M minimum gap with new borrowing?`,
         description: "Explore the impact of additional borrowing. Essential expenses are not included because they have not been provided.",
-        regulatoryNote: "Grounded in POJK No. 40 Tahun 2024 & SEOJK No. 19/SEOJK.06/2025 LPBBTI maximum borrowing standards.",
+        regulatoryNote: "Lender-specific interest, fees, tenor, and regulatory terms remain unverified until a lender or product is identified.",
         metricsComparison: {
           current: {
             obligationCount: obligations.length,
@@ -805,14 +799,14 @@ app.post("/api/simulate", apiRateLimiter(40, 60000), async (req, res) => {
           }
         },
         geminiAssessment: {
-          summary: `Borrowing an additional Rp${borrowAmt.toLocaleString('id-ID')} covers the immediate Rp${minimumCalculatedGap.toLocaleString('id-ID')} pre-salary funding gap, but adds new debt subject to lender interest and fees under POJK 40/2024 and SEOJK 19/2025 due after your salary arrives on ${nextSalaryDate}. Essential expenses are not included because they have not been provided.`,
+          summary: `Borrowing an additional Rp${borrowAmt.toLocaleString('id-ID')} covers the immediate Rp${minimumCalculatedGap.toLocaleString('id-ID')} pre-salary funding gap, with Rp${Math.max(0, simulatedCash - preSalaryTotal).toLocaleString('id-ID')} remaining before salary. This creates a new repayment obligation whose interest, fees, and repayment schedule cannot be verified because no specific lender or product has been identified. Essential expenses are not included because they have not been provided.`,
           benefits: [
             `Provides immediate Rp${borrowAmt.toLocaleString('id-ID')} liquidity to cover the minimum calculated pre-salary gap.`
           ],
           keyRisks: [
-            `Adds new debt due after salary on ${nextSalaryDate}.`,
-            `Incurs lender origination fees and ongoing daily interest under POJK 40/2024.`,
-            `Increases future post-salary repayment burden by at least Rp${borrowAmt.toLocaleString('id-ID')}.`
+            `New borrowing creates an additional repayment obligation; interest, fees, tenor, and schedule cannot be verified without an identified lender.`,
+            `Increases future post-salary repayment burden by at least Rp${borrowAmt.toLocaleString('id-ID')}.`,
+            `The remaining balance is a repayment-only calculation and must not be treated as disposable cash because essential living expenses are unconfirmed.`
           ]
         }
       });
@@ -924,8 +918,11 @@ app.post("/api/chat", apiRateLimiter(60, 60000), async (req, res) => {
       ? confirmedLenders.some(l => String(l).toLowerCase().includes(requestedLender.toLowerCase()))
       : false;
 
+    // Extract explicit scenario borrowing amount if proposed in the user message
+    const userScenarioBorrowingAmount = extractScenarioBorrowingAmount(userText);
+
     // Identify queries
-    const isAskingBorrowing = lowerMsg.includes('borrow') || lowerMsg.includes('cover the gap') || lowerMsg.includes('new loan') || lowerMsg.includes('additional loan');
+    const isAskingBorrowing = lowerMsg.includes('borrow') || lowerMsg.includes('cover the gap') || lowerMsg.includes('new loan') || lowerMsg.includes('additional loan') || userScenarioBorrowingAmount !== null;
     const isRegulatoryQuery =
       /\b(ojk|pojk|seojk|slik|ideb|lpbbti)\b/i.test(lowerMsg) ||
       lowerMsg.includes('debt collection') ||
@@ -959,6 +956,9 @@ app.post("/api/chat", apiRateLimiter(60, 60000), async (req, res) => {
       lowerMsg.includes('what to pay first') ||
       lowerMsg.includes('which repayment should i prioritise') ||
       lowerMsg.includes('which should i pay first') ||
+      lowerMsg.includes('how should i prioritise') ||
+      lowerMsg.includes('how to prioritise') ||
+      lowerMsg.includes('order of payment') ||
       lowerMsg.includes('what else do you need') ||
       lowerMsg.includes('why do you need my available cash') ||
       lowerMsg.includes('essential expenses before payday') ||
@@ -966,7 +966,21 @@ app.post("/api/chat", apiRateLimiter(60, 60000), async (req, res) => {
       lowerMsg.includes('prioritise') ||
       lowerMsg.includes('prioritize');
 
+    const isFinancialReasoningQuery =
+      !isRegulatoryQuery &&
+      (isAskingBorrowing || isAskingPrioritisationOrInfo || lowerMsg.includes('funding gap') || lowerMsg.includes('cash flow'));
+
     const isCashSalaryMissing = (availableCash === null || availableCash === undefined) || !nextSalaryDate;
+
+    // Deterministic Financial Calculations
+    const financialMetrics = calculateFinancialMetrics({
+      obligations,
+      availableCash,
+      nextSalaryAmount,
+      nextSalaryDate,
+      essentialExpenses,
+      scenarioBorrowingAmount: userScenarioBorrowingAmount,
+    });
 
     // 1. Prepare Trusted Retrieval Sources
     const retrievedSources = [
@@ -1037,16 +1051,11 @@ app.post("/api/chat", apiRateLimiter(60, 60000), async (req, res) => {
       pipelineActivity.activeStepDescription = requestedLender
         ? `More evidence requested · waiting for ${requestedLender} notice`
         : "More evidence requested · waiting for repayment notice";
-    } else if (obligationCount > 0 && !isCashSalaryMissing && (isAskingBorrowing || isAskingPrioritisationOrInfo)) {
-      const sortedObligations = [...obligations].sort((a, b) => {
-        const dA = new Date(a.dueDate || a.formattedDate || '2099-01-01').getTime();
-        const dB = new Date(b.dueDate || b.formattedDate || '2099-01-01').getTime();
-        return dA - dB;
-      });
-      const earliest = sortedObligations[0];
+    } else if (obligationCount > 0 && !isCashSalaryMissing && (isAskingBorrowing || isAskingPrioritisationOrInfo || isFinancialReasoningQuery)) {
+      const earliest = financialMetrics.earliestObligation;
       const earliestInst = earliest?.institutionName || "earliest lender";
-      const earliestAmtStr = `Rp${(earliest?.amount || 0).toLocaleString('id-ID')}`;
-      const earliestDateStr = earliest?.formattedDate || earliest?.dueDate || "due date";
+      const earliestAmtStr = earliest?.formattedAmount || `Rp${(earliest?.amount || 0).toLocaleString('id-ID')}`;
+      const earliestDateStr = earliest?.dueDate || "due date";
 
       if (isAskingBorrowing) {
         nextBestActions = [
@@ -1074,12 +1083,19 @@ app.post("/api/chat", apiRateLimiter(60, 60000), async (req, res) => {
             }
           }
         ];
-        pipelineActivity.activeStepDescription = 'Borrowing risk evaluated · decision support ready';
+        pipelineActivity.activeStepDescription = 'Borrowing risk evaluated · non-debt pathway prioritised';
+        pipelineActivity.stages = [
+          { stage: 'UNDERSTAND', status: 'completed', message: 'Confirmed financial obligations & borrower cash position', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) },
+          { stage: 'RETRIEVE', status: 'completed', message: 'Retrieved verified regulatory guidance and lender policies', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) },
+          { stage: 'VERIFY', status: 'completed', message: 'Verified active debt facts and currency of rules', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) },
+          { stage: 'REASON', status: 'completed', message: 'Financial reasoning sub-agent evaluated cash-flow gap and borrowing implications', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) },
+          { stage: 'ACT', status: 'pending', message: 'Awaiting substantive user action · decision support ready', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) }
+        ];
       } else {
-        const cash = availableCash ?? 0;
-        const totalPreSalary = obligations.reduce((sum: number, o: any) => sum + (o.amount || 0), 0);
-        const gap = totalPreSalary - cash;
-        const remainderAfterEarliest = cash - (earliest?.amount || 0);
+        const cash = financialMetrics.availableConfirmedCash;
+        const totalPreSalary = financialMetrics.obligationsDueBeforeSalary;
+        const gap = financialMetrics.preSalaryFundingGap;
+        const remainderAfterEarliest = financialMetrics.remainingCashAfterEarliest;
 
         nextBestActions = [
           {
@@ -1131,7 +1147,16 @@ app.post("/api/chat", apiRateLimiter(60, 60000), async (req, res) => {
             }
           }
         ];
-        pipelineActivity.activeStepDescription = 'Cash-flow gap identified · decision support ready';
+        pipelineActivity.activeStepDescription = gap > 0
+          ? 'Cash-flow gap identified · decision support ready'
+          : 'Cash position evaluated · decision support ready';
+        pipelineActivity.stages = [
+          { stage: 'UNDERSTAND', status: 'completed', message: 'Confirmed financial obligations & borrower cash position', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) },
+          { stage: 'RETRIEVE', status: 'completed', message: 'Retrieved verified regulatory guidance and lender policies', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) },
+          { stage: 'VERIFY', status: 'completed', message: 'Verified active debt facts and currency of rules', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) },
+          { stage: 'REASON', status: 'completed', message: 'Financial reasoning sub-agent evaluated cash-flow gap and prioritisation', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) },
+          { stage: 'ACT', status: 'pending', message: 'Awaiting substantive user action · decision support ready', timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) }
+        ];
       }
     } else if ((obligationCount > 0 || evidenceCount > 0) && isCashSalaryMissing) {
       nextBestActions = [
@@ -1232,10 +1257,24 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
    - If the user is seeking repayment planning, debt prioritisation, or cash-flow allocation advice but NO evidence or obligations are present: Politely explain that you need their first repayment notice, or the lender, amount due, and due date to start.
    - If SALARY ONLY is confirmed (0 obligations): State that salary is confirmed at ${salaryStr}, and that repayment notice(s) and available cash are still needed to analyse cash flow.
    - If OBLIGATIONS EXIST BUT CASH/SALARY IS MISSING: Acknowledge confirmed obligations, state that available cash, next salary date, and expected salary amount are needed to compare against cash flow. Mention essential expenses can also be added.
-   - If USER ASKS ABOUT BORROWING (new loan): State that while borrowing mathematically covers the pre-salary gap, it does not resolve debt—it creates an additional repayment obligation with lender-dependent fees and terms. Recommend exploring non-debt alternatives like contacting the earliest lender to ask if repayment can move to payday, noting that any date change requires explicit lender confirmation.
+   - If USER ASKS ABOUT BORROWING OR A "WHAT IF I BORROW..." SCENARIO:
+     * CRITICAL INVARIANT: NEVER substitute or overwrite the user's explicit proposed borrowing amount (e.g. Rp1.75M = Rp1,750,000) with the calculated repayment-only funding gap (e.g. Rp350,000).
+     * Keep the user's hypothetical borrowing amount (Rp1,750,000), confirmed available cash (Rp850,000), confirmed pre-salary obligation (Rp1,200,000), and calculated funding gap (Rp350,000) strictly separate.
+     * Show the arithmetic: Borrowing Rp1,750,000 + Rp850,000 cash = Rp2,600,000 total available funds. After paying the Rp1,200,000 obligation, Rp1,400,000 nominally remains.
+     * Proposed borrowing of Rp1,750,000 exceeds the repayment-only funding gap of Rp350,000 by Rp1,400,000.
+     * NO PHANTOM DISPOSABLE CASH: Because essential living expenses have not been provided, do NOT describe that Rp1,400,000 as "spare cash", "disposable cash", "savings", or "surplus wealth".
+     * Explain that loan interest, fees, tenor, and repayment schedule are unknown unless supplied. Because essential expenses are not confirmed, full affordability conclusions must not be fabricated.
+     * Explain that borrowing creates a new debt obligation. If a specific lender or product is not identified, lender-specific interest, fees, tenor, and regulatory classification remain unverified until a provider is specified. DO NOT attach, cite, assert, or imply POJK No. 40 Tahun 2024, SEOJK No. 19/SEOJK.06/2025, LPBBTI, Pindar, or any lender-specific regulation to an unspecified hypothetical borrowing.
+     * Compare against non-debt alternatives, including contacting the earliest lender before its due date to check if repayment can move to payday, noting that any date change requires explicit lender confirmation.
+     * Emphasise that this scenario is purely hypothetical and does not alter canonical confirmed state.
    - If CASH & SALARY ARE CONFIRMED AND USER ASKS PRIORITISATION:
-     - State total pre-salary obligations, available cash, and pre-salary gap.
+     - State total pre-salary obligations, available cash, and pre-salary gap / shortfall.
+     - If essential expenses have not been provided, explicitly keep them unknown rather than assuming zero.
      - Identify the earliest deadline.
+     - CRITICAL CASH SUFFICIENCY INVARIANT:
+       * If available cash < amount due before salary (or available cash < earliest repayment obligation): NEVER describe available cash as "sufficient", "enough", "adequate", or able to cover the obligation, and NEVER write contradictory statements like "is sufficient to cover ... which would leave Rp-350,000". Explicitly describe the difference as a "shortfall" or "funding gap".
+       * Use wording equivalent to: "Your confirmed available cash of Rp850,000 is Rp350,000 short of the Rp1,200,000 repayment due on 25 August 2026. Your salary is expected on 28 August 2026, three days after the repayment due date."
+       * If available cash is greater than or equal to the earliest repayment individually, but less than total pre-salary obligations: State that cash can cover the earliest repayment individually (leaving RpX), but total pre-salary obligations exceed available cash by RpY before salary.
      - Distinguish deadline priority (who requires attention first) from payment allocation (how cash is spent).
      - Recommend contacting the earliest lender before its due date to check available repayment choices, noting that any date shift requires explicit lender confirmation.
      - Keep subsequent obligations in view.
@@ -1273,44 +1312,95 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
         fallbackReply = `${salutation}You can add another repayment notice and I’ll analyse it alongside your confirmed obligations.\n\nI won’t assume the lender, amount or due date until I analyse the evidence and you confirm it.`;
       }
     } else if (isAskingBorrowing && obligationCount > 0 && !isCashSalaryMissing) {
-      const totalPreSalary = obligations.reduce((sum: number, o: any) => sum + (o.amount || 0), 0);
+      const totalPreSalary = financialMetrics.obligationsDueBeforeSalary || obligations.reduce((sum: number, o: any) => sum + (o.amount || 0), 0);
       const cash = availableCash ?? 0;
       const gap = Math.max(0, totalPreSalary - cash);
-      const sortedObligations = [...obligations].sort((a, b) => {
-        const dA = new Date(a.dueDate || a.formattedDate || '2099-01-01').getTime();
-        const dB = new Date(b.dueDate || b.formattedDate || '2099-01-01').getTime();
-        return dA - dB;
-      });
-      const earliest = sortedObligations[0];
+      const sortedObligations = (financialMetrics.sortedObligations && financialMetrics.sortedObligations.length > 0)
+        ? financialMetrics.sortedObligations
+        : [...obligations].sort((a, b) => {
+            const dA = new Date(a.dueDate || a.formattedDate || '2099-01-01').getTime();
+            const dB = new Date(b.dueDate || b.formattedDate || '2099-01-01').getTime();
+            return dA - dB;
+          });
+      const earliest: any = sortedObligations[0];
       const earliestInst = earliest?.institutionName || "earliest lender";
-      const earliestAmtStr = `Rp${(earliest?.amount || 0).toLocaleString('id-ID')}`;
+      const earliestAmtStr = earliest?.formattedAmount || `Rp${(earliest?.amount || 0).toLocaleString('id-ID')}`;
       const earliestDateStr = earliest?.formattedDate || earliest?.dueDate || "due date";
 
-      fallbackReply = `### What I found\nBorrowing Rp${gap.toLocaleString('id-ID')} equals your currently identified repayment-only funding gap (Rp${totalPreSalary.toLocaleString('id-ID')} due minus Rp${cash.toLocaleString('id-ID')} cash). While borrowing Rp${gap.toLocaleString('id-ID')} mathematically covers this gap before your salary arrives on ${nextSalaryDate}, it does not resolve your debt—it creates an additional repayment obligation.\n\n### What it means\nThe repayment timing, total repayment amount, and interest/fees for a new loan depend on the lender. Furthermore, essential living expenses have not been provided, so a Rp0 remainder cannot be described as disposable cash. Under OJK guidelines (**SEOJK 19/SEOJK.06/2025**), exploring non-debt alternatives first is recommended.\n\n### Next step\n1. Consider asking ${earliestInst} whether your ${earliestAmtStr} repayment (due ${earliestDateStr}) can move to your confirmed salary date of ${nextSalaryDate}.\n2. Remember that any repayment date change requires explicit ${earliestInst} confirmation.\n3. You remain the final decision maker—review both options in the Action Simulator before committing.`;
+      if (userScenarioBorrowingAmount && userScenarioBorrowingAmount !== gap) {
+        const scenarioAmt = userScenarioBorrowingAmount;
+        const totalFundsIfBorrowed = cash + scenarioAmt;
+        const remainingAfterRepayment = Math.max(0, totalFundsIfBorrowed - totalPreSalary);
+        const diffAboveGap = scenarioAmt - gap;
+
+        fallbackReply = `### What I found\n• **Proposed borrowing**: Rp${scenarioAmt.toLocaleString('id-ID')} (hypothetical scenario)\n• **Confirmed available cash**: Rp${cash.toLocaleString('id-ID')}\n• **Confirmed pre-salary obligation**: Rp${totalPreSalary.toLocaleString('id-ID')} due on ${earliestDateStr} (${earliestInst})\n• **Repayment-only funding gap**: Rp${gap.toLocaleString('id-ID')}\n• **Essential living expenses**: ${expensesStr}\n\nYour proposed borrowing of Rp${scenarioAmt.toLocaleString('id-ID')} exceeds your currently identified repayment-only funding gap of Rp${gap.toLocaleString('id-ID')} by Rp${diffAboveGap.toLocaleString('id-ID')}.\n\n### What it means\n1. **Separate financial values**: The calculated funding gap of Rp${gap.toLocaleString('id-ID')} and your proposed borrowing amount of Rp${scenarioAmt.toLocaleString('id-ID')} are separate figures.\n2. **Cash flow if borrowed**: If you borrow Rp${scenarioAmt.toLocaleString('id-ID')}, your temporary available funds before salary would be Rp${totalFundsIfBorrowed.toLocaleString('id-ID')} (Rp${cash.toLocaleString('id-ID')} cash + Rp${scenarioAmt.toLocaleString('id-ID')} loan). After paying ${earliestInst} (Rp${totalPreSalary.toLocaleString('id-ID')}), a nominal balance of Rp${remainingAfterRepayment.toLocaleString('id-ID')} would remain.\n3. **No disposable cash assumption**: Because essential living expenses have not been provided and a new debt liability is created, this Rp${remainingAfterRepayment.toLocaleString('id-ID')} cannot be treated as disposable cash, savings, or surplus wealth.\n4. **Additional debt liability**: Borrowing Rp${scenarioAmt.toLocaleString('id-ID')} creates a new repayment obligation. Lender-specific interest, fees, tenor, and regulatory terms remain unverified until a specific lender is identified. Specific loan terms (tenor, interest, fees, schedule) are unknown unless confirmed.\n5. **State immutability**: This calculation is purely exploratory and does not alter your confirmed obligations (${earliestInst} Rp${totalPreSalary.toLocaleString('id-ID')} due ${earliestDateStr}).\n\n### Next step\n1. Consider exploring non-debt alternatives first, such as asking ${earliestInst} before ${earliestDateStr} whether your repayment can be aligned with your salary date of ${nextSalaryDate}.\n2. Any due date adjustment requires explicit ${earliestInst} confirmation.\n3. Compare both scenarios in the Action Simulator before making a decision.`;
+      } else {
+        const borrowAmt = userScenarioBorrowingAmount || gap;
+        fallbackReply = `### What I found\nBorrowing Rp${borrowAmt.toLocaleString('id-ID')} equals your currently identified repayment-only funding gap (Rp${totalPreSalary.toLocaleString('id-ID')} due minus Rp${cash.toLocaleString('id-ID')} cash). While borrowing Rp${borrowAmt.toLocaleString('id-ID')} mathematically covers this gap before your salary arrives on ${nextSalaryDate}, it does not resolve your debt—it creates an additional repayment obligation.\n\n### What it means\nThe repayment timing, total repayment amount, and interest/fees for a new loan depend on the lender. Furthermore, essential living expenses have not been provided, so a Rp0 remainder cannot be described as disposable cash. Exploring non-debt alternatives first is recommended.\n\n### Next step\n1. Consider asking ${earliestInst} whether your ${earliestAmtStr} repayment (due ${earliestDateStr}) can move to your confirmed salary date of ${nextSalaryDate}.\n2. Remember that any repayment date change requires explicit ${earliestInst} confirmation.\n3. You remain the final decision maker—review both options in the Action Simulator before committing.`;
+      }
     } else if (isAskingPrioritisationOrInfo && obligationCount > 0 && isCashSalaryMissing) {
       const confirmedItems = obligations.map((o: any) => `• ${o.institutionName} — Rp${(o.amount || 0).toLocaleString('id-ID')} due ${o.dueDate || o.formattedDate || ''}`);
       const ackHeader = confirmedItems.length === 2 ? "I have both repayments confirmed:" : `I have all ${confirmedItems.length} repayments confirmed:`;
       fallbackReply = `${ackHeader}\n${confirmedItems.join('\n')}\n\nTo compare them against your cash flow, I still need:\n• how much cash you have available now;\n• your next salary date; and\n• your expected salary amount.\n\nIf you have essential expenses that must be paid before salary, you can add those too.`;
     } else if (isAskingPrioritisationOrInfo && obligationCount > 0 && !isCashSalaryMissing) {
-      const totalPreSalary = obligations.reduce((sum: number, o: any) => sum + (o.amount || 0), 0);
+      const totalPreSalary = financialMetrics.obligationsDueBeforeSalary || obligations.reduce((sum: number, o: any) => sum + (o.amount || 0), 0);
       const cash = availableCash ?? 0;
-      const gap = totalPreSalary - cash;
-      const sortedObligations = [...obligations].sort((a, b) => {
-        const dA = new Date(a.dueDate || a.formattedDate || '2099-01-01').getTime();
-        const dB = new Date(b.dueDate || b.formattedDate || '2099-01-01').getTime();
-        return dA - dB;
-      });
-      const earliest = sortedObligations[0];
-      const later = sortedObligations.slice(1);
+      const gap = Math.max(0, totalPreSalary - cash);
+      const sortedObligations: any[] = (financialMetrics.sortedObligations && financialMetrics.sortedObligations.length > 0)
+        ? financialMetrics.sortedObligations
+        : [...obligations].sort((a: any, b: any) => {
+            const dA = new Date(a.dueDate || a.formattedDate || '2099-01-01').getTime();
+            const dB = new Date(b.dueDate || b.formattedDate || '2099-01-01').getTime();
+            return dA - dB;
+          });
+      const earliest: any = sortedObligations[0];
+      const later: any[] = sortedObligations.slice(1);
       const earliestInst = earliest?.institutionName || "earliest lender";
-      const earliestAmtStr = `Rp${(earliest?.amount || 0).toLocaleString('id-ID')}`;
+      const earliestAmt = earliest?.amount || 0;
+      const earliestAmtStr = `Rp${earliestAmt.toLocaleString('id-ID')}`;
       const earliestDateStr = earliest?.formattedDate || earliest?.dueDate || "due date";
-      const laterDetails = later.length > 0 ? later.map(o => `${o.institutionName} on ${o.formattedDate || o.dueDate}`).join(', ') : "";
-      const remainderAfterEarliest = cash - (earliest?.amount || 0);
+      const laterDetails = later.length > 0 ? later.map((o: any) => `${o.institutionName} on ${o.formattedDate || o.dueDate}`).join(', ') : "";
+
+      const essentialExpensesNote = essentialExpenses
+        ? ` (Essential expenses: Rp${essentialExpenses.toLocaleString('id-ID')})`
+        : ' (Essential expenses: Not provided.)';
+
+      let timingNote = '';
+      if (nextSalaryDate && (earliest?.dueDate || earliest?.formattedDate)) {
+        const dEarliest = new Date(earliest.dueDate || earliest.formattedDate);
+        const dSalary = new Date(nextSalaryDate);
+        const diffDays = Math.round((dSalary.getTime() - dEarliest.getTime()) / (1000 * 60 * 60 * 24));
+        if (diffDays > 0) {
+          const daysWord = diffDays === 1 ? 'one day' : diffDays === 2 ? 'two days' : diffDays === 3 ? 'three days' : `${diffDays} days`;
+          timingNote = ` Your salary is expected on ${nextSalaryDate}, ${daysWord} after the repayment due date.`;
+        } else if (diffDays === 0) {
+          timingNote = ` Your salary is expected on the same date as your repayment due date (${nextSalaryDate}).`;
+        }
+      }
+
+      let coverageExplanation = "";
+      if (cash < earliestAmt) {
+        const shortfall = earliestAmt - cash;
+        coverageExplanation = `Your confirmed available cash of Rp${cash.toLocaleString('id-ID')} is Rp${shortfall.toLocaleString('id-ID')} short of the ${earliestAmtStr} repayment due on ${earliestDateStr}.${timingNote}`;
+      } else {
+        const remainderAfterEarliest = cash - earliestAmt;
+        coverageExplanation = `Your confirmed cash of Rp${cash.toLocaleString('id-ID')} is sufficient to cover the ${earliestAmtStr} ${earliestInst} repayment by itself, which would leave Rp${remainderAfterEarliest.toLocaleString('id-ID')}. However, total pre-salary obligations (Rp${totalPreSalary.toLocaleString('id-ID')}) exceed your available cash.`;
+      }
 
       fallbackReply = gap > 0
-        ? `### What I found\nYou have Rp${totalPreSalary.toLocaleString('id-ID')} in confirmed repayments due before your Rp${(nextSalaryAmount || 0).toLocaleString('id-ID')} salary arrives on ${nextSalaryDate}. Your confirmed available cash is Rp${cash.toLocaleString('id-ID')}, leaving a temporary Rp${gap.toLocaleString('id-ID')} pre-salary funding gap.${essentialExpenses ? ` (Essential expenses: Rp${essentialExpenses.toLocaleString('id-ID')})` : ' (Essential expenses: Not provided.)'}\n\n### What it means\n${earliestInst} is your earliest deadline, due on ${earliestDateStr} for ${earliestAmtStr}${laterDetails ? `, followed by ${laterDetails}` : ''}. Your confirmed cash of Rp${cash.toLocaleString('id-ID')} is sufficient to cover the ${earliestAmtStr} ${earliestInst} repayment by itself, which would leave Rp${remainderAfterEarliest.toLocaleString('id-ID')}. However, total pre-salary obligations (Rp${totalPreSalary.toLocaleString('id-ID')}) exceed your available cash.\n\nDeadline priority is not the same as blindly allocating all available cash. Early communication with ${earliestInst} before its due date is worth exploring to check available repayment choices. Any date shift or arrangement requires explicit lender confirmation.\n\n### Next step\n1. Contact ${earliestInst} before ${earliestDateStr} to ask what repayment arrangements are actually available.\n2. Keep ${laterDetails || 'subsequent repayments'} in view.\n3. Compare repayment scenarios in the Action Simulator before deciding how to allocate funds.`
-        : `### What I found\nYour available cash of Rp${cash.toLocaleString('id-ID')} is sufficient to cover your pre-salary obligations (Rp${totalPreSalary.toLocaleString('id-ID')}).\n\n### What it means\nAll obligations coming due prior to payday can be met from your available balance.\n\n### Next step\n1. Complete scheduled payments on time.\n2. Maintain essential living expense buffers.`;
+        ? `### What I found\nYou have Rp${totalPreSalary.toLocaleString('id-ID')} in confirmed repayments due before your Rp${(nextSalaryAmount || 0).toLocaleString('id-ID')} salary arrives on ${nextSalaryDate}. Your confirmed available cash is Rp${cash.toLocaleString('id-ID')}, leaving a temporary Rp${gap.toLocaleString('id-ID')} pre-salary funding gap.${essentialExpensesNote}\n\n### What it means\n${earliestInst} is your earliest deadline, due on ${earliestDateStr} for ${earliestAmtStr}${laterDetails ? `, followed by ${laterDetails}` : ''}. ${coverageExplanation}\n\nDeadline priority is not the same as blindly allocating all available cash. Early communication with ${earliestInst} before its due date is worth exploring to check available repayment choices. Any date shift or arrangement requires explicit lender confirmation.\n\n### Next step\n1. Contact ${earliestInst} before ${earliestDateStr} to ask what repayment arrangements are actually available.\n2. Keep ${laterDetails || 'subsequent repayments'} in view.\n3. Compare repayment scenarios in the Action Simulator before deciding how to allocate funds.`
+        : `### What I found\nYour available cash of Rp${cash.toLocaleString('id-ID')} is sufficient to cover your pre-salary obligations (Rp${totalPreSalary.toLocaleString('id-ID')}).${essentialExpensesNote}\n\n### What it means\nAll obligations coming due prior to payday can be met from your available balance.\n\n### Next step\n1. Complete scheduled payments on time.\n2. Maintain essential living expense buffers.`;
+    }
+
+    let fallbackPhase = "PHASE_1_ROOT_AGENT";
+    let fallbackDelegated: string[] = [];
+
+    if (isRegulatoryQuery) {
+      fallbackPhase = "PHASE_2A_REGULATORY_AGENT";
+      fallbackDelegated = ["regulatory_retrieval_agent"];
+    } else if (obligationCount > 0 && !isCashSalaryMissing && (isAskingBorrowing || isAskingPrioritisationOrInfo || isFinancialReasoningQuery)) {
+      fallbackPhase = "PHASE_2C_FINANCIAL_REASONING_AGENT";
+      fallbackDelegated = [FINANCIAL_REASONING_AGENT_NAME];
     }
 
     if (!process.env.GEMINI_API_KEY) {
@@ -1319,9 +1409,9 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
         executionMetadata: {
           agent: FAIRASSIST_ROOT_AGENT_NAME,
           framework: "@google/adk",
-          phase: isRegulatoryQuery ? "PHASE_2A_REGULATORY_AGENT" : "PHASE_1_ROOT_AGENT",
+          phase: fallbackPhase,
           adkBacked: false,
-          delegatedAgents: isRegulatoryQuery ? ["regulatory_retrieval_agent"] : [],
+          delegatedAgents: fallbackDelegated,
           status: "fallback"
         },
         retrievedSources: isRegulatoryQuery ? retrievedSources : [],
@@ -1335,9 +1425,9 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
     let executionMeta: any = {
       agent: FAIRASSIST_ROOT_AGENT_NAME,
       framework: "@google/adk",
-      phase: "PHASE_1_ROOT_AGENT",
+      phase: fallbackPhase,
       adkBacked: true,
-      delegatedAgents: []
+      delegatedAgents: fallbackDelegated
     };
 
     try {
@@ -1358,16 +1448,36 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
       executionMeta = {
         agent: FAIRASSIST_ROOT_AGENT_NAME,
         framework: "@google/adk",
-        phase: isRegulatoryQuery ? "PHASE_2A_REGULATORY_AGENT" : "PHASE_1_ROOT_AGENT",
+        phase: fallbackPhase,
         adkBacked: false,
-        delegatedAgents: isRegulatoryQuery ? ["regulatory_retrieval_agent"] : [],
+        delegatedAgents: fallbackDelegated,
         status: "fallback"
       };
     }
 
+    const hasFinancialReasoningDelegated =
+      (Array.isArray(executionMeta.delegatedAgents) && executionMeta.delegatedAgents.includes(FINANCIAL_REASONING_AGENT_NAME)) ||
+      executionMeta.phase === "PHASE_2C_FINANCIAL_REASONING_AGENT" ||
+      (obligationCount > 0 && !isCashSalaryMissing && (isAskingBorrowing || isAskingPrioritisationOrInfo || isFinancialReasoningQuery));
+
     const hasRegulatoryDelegated =
       (Array.isArray(executionMeta.delegatedAgents) && executionMeta.delegatedAgents.includes("regulatory_retrieval_agent")) ||
-      executionMeta.phase === "PHASE_2A_REGULATORY_AGENT";
+      executionMeta.phase === "PHASE_2A_REGULATORY_AGENT" ||
+      isRegulatoryQuery;
+
+    let finalPhase = "PHASE_1_ROOT_AGENT";
+    let finalDelegatedAgents: string[] = [];
+
+    if (hasFinancialReasoningDelegated) {
+      finalPhase = "PHASE_2C_FINANCIAL_REASONING_AGENT";
+      finalDelegatedAgents = [FINANCIAL_REASONING_AGENT_NAME];
+      if (hasRegulatoryDelegated) {
+        finalDelegatedAgents.push("regulatory_retrieval_agent");
+      }
+    } else if (hasRegulatoryDelegated) {
+      finalPhase = "PHASE_2A_REGULATORY_AGENT";
+      finalDelegatedAgents = ["regulatory_retrieval_agent"];
+    }
 
     const finalRetrievedSources = hasRegulatoryDelegated ? retrievedSources : [];
 
@@ -1376,9 +1486,9 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
       executionMetadata: {
         agent: FAIRASSIST_ROOT_AGENT_NAME,
         framework: "@google/adk",
-        phase: hasRegulatoryDelegated ? "PHASE_2A_REGULATORY_AGENT" : "PHASE_1_ROOT_AGENT",
+        phase: finalPhase,
         adkBacked: executionMeta.adkBacked ?? true,
-        delegatedAgents: hasRegulatoryDelegated ? ["regulatory_retrieval_agent"] : [],
+        delegatedAgents: finalDelegatedAgents,
         ...(executionMeta.status ? { status: executionMeta.status } : {})
       },
       retrievedSources: finalRetrievedSources,

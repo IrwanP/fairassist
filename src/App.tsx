@@ -34,6 +34,12 @@ import {
   DEFAULT_FINANCIAL_CONTEXT 
 } from './data/mockData';
 import { formatBritishDate } from './components/ActionSimulator';
+import { 
+  deriveCanonicalObligations, 
+  getCanonicalEvidenceDetails, 
+  normalizeInstitutionName,
+  extractScenarioBorrowingAmount 
+} from './utils/canonicalData';
 
 import { Header } from './components/Header';
 import { EvidenceColumn } from './components/EvidenceColumn';
@@ -249,33 +255,28 @@ export default function App() {
     }
   };
 
-  // Single source of truth for confirmed active repayment obligations & evidence
+  // Single canonical source of truth for confirmed active repayment obligations & evidence
   const activeRepaymentObligations = useMemo(() => {
-    return (obligations || []).filter((o) => {
-      if (o.isSalary || o.category === 'Salary') return false;
-      const catLower = (o.category || '').toLowerCase();
-      if (catLower.includes('salary') || catLower.includes('payroll') || catLower.includes('slik')) return false;
-      const titleLower = (o.title || '').toLowerCase();
-      if (titleLower.includes('salary') || titleLower.includes('payroll') || titleLower.includes('slik')) return false;
-      return (o.amount !== null && o.amount !== undefined && o.amount > 0) || Boolean(o.institutionName);
-    });
-  }, [obligations]);
+    return deriveCanonicalObligations(obligations, evidenceList);
+  }, [obligations, evidenceList]);
 
   const activeRepaymentEvidence = useMemo(() => {
     return (evidenceList || []).filter((e) => {
-      const cat = (e.category || '').toLowerCase();
-      const title = (e.title || '').toLowerCase();
-      if (cat.includes('salary') || cat.includes('payroll') || cat.includes('slik') || cat.includes('statement')) {
-        return false;
-      }
-      if (title.includes('salary') || title.includes('payroll') || title.includes('slik') || title.includes('statement')) {
-        return false;
-      }
-      const amt = e.userConfirmedDetails?.amountDue ?? e.extractedDetails?.amountDue;
-      if (amt === 0 && (cat.includes('bank statement') || cat.includes('ideb'))) return false;
-      return true;
+      const details = getCanonicalEvidenceDetails(e);
+      return details.isRepaymentObligation;
     });
   }, [evidenceList]);
+
+  // Extract user's hypothetical borrowing amount from chat messages if present
+  const detectedBorrowAmount = useMemo(() => {
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+      if (chatMessages[i].sender === 'user') {
+        const amt = extractScenarioBorrowingAmount(chatMessages[i].text);
+        if (amt !== null && amt > 0) return amt;
+      }
+    }
+    return null;
+  }, [chatMessages]);
 
   const financialContext: FinancialContext = {
     ...DEFAULT_FINANCIAL_CONTEXT,
@@ -300,6 +301,8 @@ export default function App() {
     nextSalaryDate,
     nextSalaryAmount,
     essentialExpenses,
+    scenarioBorrowingAmount: detectedBorrowAmount,
+    hypotheticalBorrowAmount: detectedBorrowAmount,
     regulatorySources,
     institutionPolicies,
   };
@@ -1427,7 +1430,7 @@ export default function App() {
     if (!hasConfirmedObligations) {
       return {
         text: 'Add your first repayment notice.',
-        actionLabel: 'Add repayment evidence →',
+        actionLabel: 'Add repayment evidence',
         onAction: () => handleOpenUploadModal('screenshot')
       };
     }
@@ -1436,7 +1439,7 @@ export default function App() {
     if (!hasCashContext || !hasSalaryContext) {
       return {
         text: activeTab === 'Action Plan' ? 'Complete your financial context.' : 'Add your cash and salary timing.',
-        actionLabel: 'Add financial context →',
+        actionLabel: 'Add financial context',
         onAction: () => setIsFinancialContextModalOpen(true)
       };
     }
@@ -1445,7 +1448,7 @@ export default function App() {
     if (activeTab === 'Action Plan') {
       return {
         text: 'Prepare the next step with your lender.',
-        actionLabel: 'Prepare lender request →',
+        actionLabel: 'Prepare lender request',
         onAction: () => {
           const el = document.getElementById('action-plan-step-1') || document.getElementById('step-1-section') || document.getElementById('action-step-1');
           if (el) {
@@ -1459,7 +1462,7 @@ export default function App() {
       const isScenarioSelected = selectedScenarioType !== null;
       return {
         text: 'Simulate scenario outcomes before taking new commitments.',
-        actionLabel: isScenarioSelected ? 'Review selected scenario →' : 'Choose a scenario →',
+        actionLabel: isScenarioSelected ? 'Review selected scenario' : 'Choose a scenario',
         onAction: () => {
           const targetId = isScenarioSelected ? 'financial-impact-comparison' : 'scenario-selection';
           const el = document.getElementById(targetId);
@@ -1473,14 +1476,14 @@ export default function App() {
     if (evidenceList.some(e => e.verifiedStatus === 'Pending Verification')) {
       return {
         text: 'Review what Gemini found.',
-        actionLabel: 'Review evidence →',
+        actionLabel: 'Review evidence',
         onAction: () => handleOpenUploadModal('screenshot')
       };
     }
 
     return {
       text: 'Review your Next Best Actions.',
-      actionLabel: 'Review actions →',
+      actionLabel: 'Review actions',
       onAction: handleNavigateToNextBestActions
     };
   };
@@ -1614,6 +1617,7 @@ export default function App() {
             {activeTab === 'Action Simulator' && (
               <ActionSimulator 
                 context={financialContext} 
+                hypotheticalBorrowAmount={detectedBorrowAmount}
                 selectedScenarioType={selectedScenarioType}
                 onSelectScenarioType={setSelectedScenarioType}
                 onOpenUploadModal={handleOpenUploadModal}

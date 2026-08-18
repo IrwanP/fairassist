@@ -240,6 +240,8 @@ export interface FinancialContext {
   nextSalaryDate: string | null;
   nextSalaryAmount: number | null;
   essentialExpenses?: number | null;
+  scenarioBorrowingAmount?: number | null;
+  hypotheticalBorrowAmount?: number | null;
 }
 
 export function extractSalaryDetailsFromEvidence(item: EvidenceItem): { salaryAmount: number | null; salaryDate: string | null } {

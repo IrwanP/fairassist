@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { FinancialContext, AgentActivity, GeminiInsight } from '../types';
+import { deriveCanonicalObligations } from '../utils/canonicalData';
 import { PipelineStepper } from './PipelineStepper';
 import { GeminiResponse } from './GeminiResponse';
 import { 
@@ -29,15 +30,10 @@ export const SituationColumn: React.FC<SituationColumnProps> = ({
 }) => {
   const { availableCash, selectedBank, selectedPindar, obligations, nextSalaryAmount, evidenceList } = context;
 
-  // Active repayment obligations (excludes salary, SLIK, regulatory, informational)
+  // Active repayment obligations derived from canonical obligations and confirmed evidence
   const activeRepaymentObligations = useMemo(() => {
-    return (obligations || []).filter((o) => {
-      if (o.isSalary || o.category === 'Salary') return false;
-      const catLower = (o.category || '').toLowerCase();
-      if (catLower.includes('salary') || catLower.includes('payroll') || catLower.includes('slik')) return false;
-      return (o.amount !== null && o.amount !== undefined && o.amount > 0) || Boolean(o.institutionName);
-    });
-  }, [obligations]);
+    return deriveCanonicalObligations(obligations, evidenceList);
+  }, [obligations, evidenceList]);
 
   const totalNearTermDue = useMemo(() => {
     return activeRepaymentObligations.reduce((sum, o) => sum + (o.amount || 0), 0);

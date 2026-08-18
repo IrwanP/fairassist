@@ -17,6 +17,7 @@ interface ActionSimulatorProps {
   addedToPlan?: boolean;
   onOpenUploadModal?: (type: 'camera' | 'screenshot' | 'document') => void;
   onOpenFinancialContextModal?: () => void;
+  hypotheticalBorrowAmount?: number | null;
 }
 
 export function formatBritishDate(dateStr?: string | null): string {
@@ -53,6 +54,7 @@ export const ActionSimulator: React.FC<ActionSimulatorProps> = ({
   addedToPlan = false,
   onOpenUploadModal,
   onOpenFinancialContextModal,
+  hypotheticalBorrowAmount: propsHypotheticalBorrowAmount,
 }) => {
   const [internalScenarioType, setInternalScenarioType] = useState<'REQUEST_EXTENSION' | 'BORROW_MORE' | null>('REQUEST_EXTENSION');
   const selectedScenarioType = propsScenarioType !== undefined ? propsScenarioType : internalScenarioType;
@@ -131,9 +133,30 @@ export const ActionSimulator: React.FC<ActionSimulatorProps> = ({
 
   const minimumCalculatedGap = Math.max(0, preSalaryObligationsTotal - availableCash);
 
-  // Scenario B borrow amount defaults to minimumCalculatedGap if not overridden
-  const borrowAmount = borrowAmountInput !== null ? borrowAmountInput : (minimumCalculatedGap > 0 ? minimumCalculatedGap : Math.round(targetAmount * 0.5));
+  // Preserve user hypothetical borrow amount without overwriting or substituting verifiedFundingGap
+  const hypotheticalBorrowAmount = propsHypotheticalBorrowAmount ?? context.hypotheticalBorrowAmount ?? context.scenarioBorrowingAmount ?? null;
+
+  // Scenario B borrow amount defaults to user hypothetical borrow amount if provided, else minimumCalculatedGap
+  const defaultBorrowAmount = hypotheticalBorrowAmount !== null && hypotheticalBorrowAmount > 0
+    ? hypotheticalBorrowAmount
+    : (minimumCalculatedGap > 0 ? minimumCalculatedGap : Math.round(targetAmount * 0.5));
+
+  const borrowAmount = borrowAmountInput !== null ? borrowAmountInput : defaultBorrowAmount;
   const formattedBorrowM = `${parseFloat((borrowAmount / 1000000).toFixed(2))}M`;
+
+  const isHypotheticalAmount = hypotheticalBorrowAmount !== null && borrowAmount === hypotheticalBorrowAmount;
+
+  const scenarioBTitle = isHypotheticalAmount
+    ? `What if I borrow Rp${formattedBorrowM} to cover the gap instead?`
+    : `What if I borrow Rp${formattedBorrowM} to cover the current repayment-only gap?`;
+
+  const scenarioBSupporting = borrowAmount > minimumCalculatedGap
+    ? `Borrowing Rp${borrowAmount.toLocaleString('en-US')} covers the Rp${minimumCalculatedGap.toLocaleString('en-US')} repayment gap. Essential living expenses are not included because they have not been provided. The Rp${(borrowAmount - minimumCalculatedGap).toLocaleString('en-US')} remainder is not disposable cash.`
+    : `Rp${borrowAmount.toLocaleString('en-US')} reflects the currently identified repayment gap only. Essential living expenses are not included because they have not been provided.`;
+
+  const scenarioBGeminiSummary = borrowAmount > minimumCalculatedGap
+    ? `Borrowing an additional Rp${borrowAmount.toLocaleString('en-US')} covers the immediate Rp${minimumCalculatedGap.toLocaleString('en-US')} pre-salary funding gap, with Rp${(borrowAmount - minimumCalculatedGap).toLocaleString('en-US')} remaining before salary. This creates a new repayment obligation whose interest, fees, and repayment schedule cannot be verified because no specific lender or product has been identified. The remaining balance is not disposable cash because essential living expenses have not been provided.`
+    : `Borrowing an additional Rp${borrowAmount.toLocaleString('en-US')} covers the immediate repayment-only funding gap, but introduces a new repayment obligation whose interest, fees, and repayment terms cannot be verified until a specific lender is identified. Essential living expenses are not included because they have not been provided.`;
 
   // Single Source of Truth Scenario Object
   const selectedScenario = useMemo(() => {
@@ -199,13 +222,13 @@ export const ActionSimulator: React.FC<ActionSimulatorProps> = ({
         id: 'scenario-b',
         type: 'BORROW_MORE' as const,
         badgeText: 'Scenario B · Higher risk',
-        title: `What if I borrow Rp${formattedBorrowM} to cover the current repayment-only gap?`,
-        supportingText: `Rp${borrowAmount.toLocaleString('en-US')} reflects the currently identified repayment gap only. Essential living expenses are not included because they have not been provided.`,
-        targetInstitution: 'New P2P Lender',
+        title: scenarioBTitle,
+        supportingText: scenarioBSupporting,
+        targetInstitution: 'Unspecified lender',
         targetAmount: borrowAmount,
         originalDueDate: 'Immediate',
         proposedDueDate,
-        productName: 'P2P Micro Loan',
+        productName: 'Hypothetical borrowing',
         shiftDays: 0,
         requiresLenderConfirmation: false,
         currentPreSalaryRepayments: preSalaryObligationsTotal,
@@ -217,17 +240,17 @@ export const ActionSimulator: React.FC<ActionSimulatorProps> = ({
         simulatedFundingGap,
         projectedRemainingCash,
         isBank: false,
-        sourceScopeTag: 'LPBBTI / Pindar',
-        regulatoryNote: `Grounded in POJK No. 40 Tahun 2024 & SEOJK No. 19/SEOJK.06/2025 LPBBTI maximum borrowing standards.`,
+        sourceScopeTag: 'Lender not specified',
+        regulatoryNote: `Lender-specific interest, fees, tenor, and regulatory terms remain unverified until a lender or product is identified.`,
         geminiAssessment: {
-          summary: `Borrowing an additional Rp${borrowAmount.toLocaleString('en-US')} covers the immediate repayment-only funding gap, but introduces a new repayment obligation whose repayment timing and terms are not yet known. Essential living expenses are not included because they have not been provided.`,
+          summary: scenarioBGeminiSummary,
           benefits: [
-            `Provides immediate Rp${borrowAmount.toLocaleString('en-US')} liquidity to cover the minimum calculated pre-salary gap.`
+            `Provides immediate Rp${borrowAmount.toLocaleString('en-US')} liquidity to cover the minimum calculated pre-salary gap of Rp${minimumCalculatedGap.toLocaleString('en-US')}.`
           ],
           keyRisks: [
-            `New borrowing may introduce additional interest, fees, or repayment obligations depending on the lender and product terms.`,
-            `Confirm the total repayment amount, fees, interest, due date, and credit-reporting implications before accepting any new borrowing.`,
-            `Increases overall repayment obligations; repayment timing and total repayment amount depend on the lender and product terms.`
+            `New borrowing creates an additional repayment obligation; interest, fees, tenor, and schedule cannot be verified without an identified lender.`,
+            `Increases future post-salary repayment burden by at least Rp${borrowAmount.toLocaleString('en-US')}.`,
+            `The remaining balance is a repayment-only calculation and must not be treated as disposable cash or savings because essential living expenses are unconfirmed.`
           ]
         }
       };
@@ -237,7 +260,9 @@ export const ActionSimulator: React.FC<ActionSimulatorProps> = ({
     selectedScenarioType,
     extensionDays,
     borrowAmount,
-    formattedBorrowM,
+    scenarioBTitle,
+    scenarioBSupporting,
+    scenarioBGeminiSummary,
     targetInstitution,
     targetAmount,
     originalDueDate,
@@ -415,10 +440,10 @@ export const ActionSimulator: React.FC<ActionSimulatorProps> = ({
             <PlusCircle className="w-4 h-4 text-rose-600" />
           </div>
           <h3 className="text-sm font-bold text-stone-900">
-            What if I borrow Rp{formattedBorrowM} to cover the current repayment-only gap?
+            {scenarioBTitle}
           </h3>
           <p className="text-xs text-stone-500 mt-1 leading-relaxed">
-            Rp{borrowAmount.toLocaleString('en-US')} reflects the currently identified repayment gap only. Essential living expenses are not included because they have not been provided.
+            {scenarioBSupporting}
           </p>
 
           {selectedScenarioType === 'BORROW_MORE' && (
@@ -429,8 +454,14 @@ export const ActionSimulator: React.FC<ActionSimulatorProps> = ({
                 onChange={(e) => setBorrowAmountInput(Number(e.target.value))}
                 className="text-xs font-semibold bg-stone-50 border border-stone-200 rounded px-2 py-0.5"
               >
-                <option value={minimumCalculatedGap}>Rp{minimumCalculatedGap.toLocaleString('en-US')} (Current gap)</option>
+                {hypotheticalBorrowAmount !== null && hypotheticalBorrowAmount !== minimumCalculatedGap && (
+                  <option value={hypotheticalBorrowAmount}>Rp{hypotheticalBorrowAmount.toLocaleString('en-US')} (Hypothetical amount)</option>
+                )}
+                <option value={minimumCalculatedGap}>Rp{minimumCalculatedGap.toLocaleString('en-US')} (Current repayment gap)</option>
                 <option value={1500000}>Rp1,500,000</option>
+                {(!hypotheticalBorrowAmount || hypotheticalBorrowAmount !== 1750000) && (
+                  <option value={1750000}>Rp1,750,000</option>
+                )}
                 <option value={2000000}>Rp2,000,000</option>
               </select>
             </div>

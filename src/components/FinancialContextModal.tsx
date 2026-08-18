@@ -74,8 +74,6 @@ export const FinancialContextModal: React.FC<FinancialContextModalProps> = ({
   onSubmit,
   context,
 }) => {
-  if (!isOpen) return null;
-
   // Canonical confirmed salary details from context or confirmed evidence
   const canonicalSalary = useMemo(() => {
     let amt = context.nextSalaryAmount;
@@ -131,6 +129,8 @@ export const FinancialContextModal: React.FC<FinancialContextModalProps> = ({
       }
     }
   }, [isOpen, context, canonicalSalary]);
+
+  if (!isOpen) return null;
 
   const formatNumberString = (val: string) => {
     const raw = val.replace(/\D/g, '');

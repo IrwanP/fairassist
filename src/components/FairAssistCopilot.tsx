@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { ChatMessage, FinancialContext, AgentActivity, FocusTarget, RetrievalResult } from '../types';
 import { GeminiResponse } from './GeminiResponse';
 import { TrustedSourceRegistry } from '../data/sourcesConfig';
+import { deriveCanonicalObligations, normalizeInstitutionName, getCanonicalEvidenceDetails } from '../utils/canonicalData';
 
 const CompactTrustedSources: React.FC<{ sources: RetrievalResult[] }> = ({ sources }) => {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -142,53 +143,36 @@ export const FairAssistCopilot: React.FC<FairAssistCopilotProps> = ({
   const userMessagesCount = messages.filter((m) => m.sender === 'user').length;
   const isEmptySession = userMessagesCount === 0 && context.evidenceList.length === 0;
 
-  // Filter strictly to repayment institutions (excluding salary, payroll, employers, slik)
-  const confirmedRepaymentInsts = Array.from(new Set([
-    ...context.evidenceList
-      .filter((e) => {
-        const cat = (e.category || '').toLowerCase();
-        const title = (e.title || '').toLowerCase();
-        return !cat.includes('salary') && !cat.includes('payroll') && !cat.includes('slip') && !cat.includes('gaji') && !cat.includes('slik') && !cat.includes('ideb') && !cat.includes('bank statement') &&
-               !title.includes('salary') && !title.includes('payroll') && !title.includes('slip') && !title.includes('gaji') && !title.includes('slik') && !title.includes('ideb');
-      })
-      .flatMap((e) => [
-        e.userConfirmedDetails?.institutionName,
-        e.extractedDetails?.institutionName,
-      ]).filter(Boolean) as string[],
-    ...context.obligations
-      .filter((o) => !o.isSalary && !(o.category || '').toLowerCase().includes('salary'))
-      .map((o) => o.institutionName).filter(Boolean),
-  ])).filter((name) => {
-    const n = name.toLowerCase();
-    return !n.includes('nusantara') && !n.includes('digital') && !n.includes('employer') && !n.includes('payroll') && !n.includes('slik');
-  });
+  // Canonical active repayment obligations
+  const canonicalObligations = React.useMemo(() => {
+    return deriveCanonicalObligations(context.obligations, context.evidenceList);
+  }, [context.obligations, context.evidenceList]);
+
+  // Filter strictly to confirmed repayment institutions with valid, clean names
+  const confirmedRepaymentInsts = React.useMemo(() => {
+    const names = new Set<string>();
+    for (const obl of canonicalObligations) {
+      const norm = normalizeInstitutionName(obl.institutionName);
+      if (norm) names.add(norm);
+    }
+    for (const e of context.evidenceList) {
+      const details = getCanonicalEvidenceDetails(e);
+      if (details.isRepaymentObligation && details.institutionName) {
+        names.add(details.institutionName);
+      }
+    }
+    return Array.from(names);
+  }, [canonicalObligations, context.evidenceList]);
+
   const confirmedInsts = confirmedRepaymentInsts;
 
   // State-driven boolean checks
-  const hasConfirmedNotice = context.evidenceList.length > 0 || context.obligations.length > 0;
+  const hasConfirmedNotice = canonicalObligations.length > 0 || context.evidenceList.length > 0;
   const isCashSalaryMissing = context.availableCash === null || context.availableCash === undefined || !context.nextSalaryDate;
 
   // Derived normalized evidence summary badge text (separating repayments, salary, SLIK, etc.)
   const evidenceSummaryText = React.useMemo(() => {
-    // Active repayment obligations from obligations array (excluding salary, payroll, slik)
-    const activeObligations = context.obligations.filter((o) => {
-      if (o.isSalary || o.category === 'Salary') return false;
-      const cat = (o.category || '').toLowerCase();
-      return !cat.includes('salary') && !cat.includes('payroll') && !cat.includes('slik');
-    });
-
-    // Evidence items that contribute to repayment liabilities
-    const repaymentEvidenceItems = context.evidenceList.filter((e) => {
-      const cat = (e.category || '').toLowerCase();
-      const title = (e.title || '').toLowerCase();
-      const isSalaryOrIncome = cat.includes('salary') || cat.includes('payroll') || cat.includes('statement') || title.includes('salary') || title.includes('payroll') || title.includes('statement');
-      const isSlikOrCredit = cat.includes('slik') || cat.includes('ideb') || title.includes('slik') || title.includes('ideb');
-      return !isSalaryOrIncome && !isSlikOrCredit;
-    });
-
-    const repaymentCount = activeObligations.length > 0
-      ? activeObligations.length
-      : repaymentEvidenceItems.length;
+    const repaymentCount = canonicalObligations.length;
 
     // 2. Income / Salary context
     const hasSalaryConfirmed = Boolean(
@@ -229,27 +213,11 @@ export const FairAssistCopilot: React.FC<FairAssistCopilotProps> = ({
     }
 
     return parts.join(' · ');
-  }, [context.obligations, context.evidenceList, context.nextSalaryDate, context.nextSalaryAmount]);
+  }, [canonicalObligations, context.evidenceList, context.nextSalaryDate, context.nextSalaryAmount]);
 
   let contextualQueries: string[] = [];
 
-  const activeRepaymentObligations = context.obligations.filter((o) => {
-    if (o.isSalary || o.category === 'Salary') return false;
-    const cat = (o.category || '').toLowerCase();
-    return !cat.includes('salary') && !cat.includes('payroll') && !cat.includes('slik');
-  });
-
-  const repaymentEvidenceItems = context.evidenceList.filter((e) => {
-    const cat = (e.category || '').toLowerCase();
-    const title = (e.title || '').toLowerCase();
-    const isSalaryOrIncome = cat.includes('salary') || cat.includes('payroll') || cat.includes('statement') || cat.includes('slip') || cat.includes('gaji') || title.includes('salary') || title.includes('payroll') || title.includes('statement') || title.includes('slip') || title.includes('gaji');
-    const isSlikOrCredit = cat.includes('slik') || cat.includes('ideb') || title.includes('slik') || title.includes('ideb');
-    return !isSalaryOrIncome && !isSlikOrCredit;
-  });
-
-  const repaymentCount = activeRepaymentObligations.length > 0
-    ? activeRepaymentObligations.length
-    : repaymentEvidenceItems.length;
+  const repaymentCount = canonicalObligations.length;
 
   const hasSalaryConfirmed = Boolean(
     context.nextSalaryDate ||
@@ -277,14 +245,14 @@ export const FairAssistCopilot: React.FC<FairAssistCopilotProps> = ({
       ];
     }
   } else if (isCashSalaryMissing) {
-    const primaryInst = confirmedRepaymentInsts[0] || 'loan';
+    const primaryInst = confirmedRepaymentInsts[0] || 'Bank Central Asia (BCA)';
     contextualQueries = [
       'Why do you need my available cash?',
       'Can I add another repayment notice?',
       `What rules apply to my ${primaryInst} repayment?`,
     ];
   } else {
-    const mainInst = confirmedRepaymentInsts[0] || 'EasyCash';
+    const mainInst = confirmedRepaymentInsts[0] || 'Bank Central Asia (BCA)';
     contextualQueries = [
       'Which repayment should I prioritise first?',
       `What rules apply to my ${mainInst} repayment?`,

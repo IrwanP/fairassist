@@ -22,6 +22,10 @@ import {
   clearLatestRecordedEvidence,
   type MultimodalExtractedEvidence,
 } from './multimodalEvidenceAgent';
+import {
+  FINANCIAL_REASONING_AGENT_NAME,
+  financialReasoningAgent,
+} from './financialReasoningAgent';
 
 export const FAIRASSIST_ROOT_AGENT_NAME = 'fairassist_root_agent';
 export const FAIRASSIST_ROOT_AGENT_DESCRIPTION =
@@ -33,11 +37,13 @@ FairAssist provides evidence-grounded financial decision support for Indonesian 
 You are the primary conversational orchestrator. You have access to specialized sub-agents:
 1. regulatory_retrieval_agent: Specializes in retrieving and grounding Indonesian financial regulations (e.g. POJK 22/2023, POJK 40/2024, SEOJK 19/2025, OJK SLIK credit reporting), lender policies, and borrower statutory rights.
 2. multimodal_evidence_agent: Specializes in analysing user-provided financial evidence (repayment notice photographs, screenshots, mobile app repayment screens, bank/lender notices, salary slips, and PDF documents) using multimodal reasoning.
+3. financial_reasoning_agent: Specializes in transforming confirmed financial evidence, obligations, available cash, and salary schedules into explainable financial decision support, deterministic funding gap calculations, and repayment prioritisation.
 
 Delegation Rules:
 - When a user uploads or provides an evidence file, screenshot, repayment notice, or document for visual/multimodal analysis, delegate to multimodal_evidence_agent using transfer_to_agent.
 - ONLY delegate to regulatory_retrieval_agent (using transfer_to_agent) when the user query explicitly asks about, requires, or references Indonesian financial regulations (OJK, POJK, SEOJK, SLIK credit scoring), lender regulatory policies/RIPLAY, LPBBTI debt-collection rules, borrower legal/statutory rights, prohibited collection practices, or institutional dispute mechanisms.
-- Do NOT delegate for conversational queries, asking what information or evidence is needed, repayment planning coordination, prioritisation questions (such as "Which repayment should I prioritise first?", "What information do you need before recommending priority?"), cash-flow questions, or general guidance. Answer all non-regulatory and non-evidence queries directly as the root orchestrator.
+- When the user query asks for financial reasoning, repayment prioritisation ("Which should I pay first?", "How should I prioritise?", "What should I pay first?"), hypothetical / counterfactual borrowing questions ("What if I borrow Rp1.75M to cover the gap instead?", "What if I take a new loan?"), cash-flow gap calculations, affordability analysis, or repayment planning over confirmed financial obligations, delegate to financial_reasoning_agent using transfer_to_agent.
+- Do NOT delegate for general conversational greetings, asking what initial information or evidence is needed when no obligations exist, or general coordination. Answer initial missing-evidence queries directly as the root orchestrator.
 
 Core Principles and Operating Boundaries:
 1. Decision Support, Not Autonomous Decisions:
@@ -69,7 +75,7 @@ export function createFairAssistRootAgent(): LlmAgent {
     description: FAIRASSIST_ROOT_AGENT_DESCRIPTION,
     model: 'gemini-3.5-flash',
     instruction: FAIRASSIST_ROOT_AGENT_INSTRUCTION,
-    subAgents: [regulatoryRetrievalAgent, multimodalEvidenceAgent],
+    subAgents: [regulatoryRetrievalAgent, multimodalEvidenceAgent, financialReasoningAgent],
   });
 }
 
@@ -189,6 +195,7 @@ export async function runFairAssistRootAgent(
     executedAgents.has(MULTIMODAL_EVIDENCE_AGENT_NAME) ||
     Boolean(options?.evidenceFile?.inlineData?.data);
   const isRegulatoryExecuted = executedAgents.has(REGULATORY_RETRIEVAL_AGENT_NAME);
+  const isFinancialReasoningExecuted = executedAgents.has(FINANCIAL_REASONING_AGENT_NAME);
 
   let phase = 'PHASE_1_ROOT_AGENT';
   let delegatedAgents: string[] = [];
@@ -196,6 +203,12 @@ export async function runFairAssistRootAgent(
   if (isMultimodalExecuted) {
     phase = 'PHASE_2B_MULTIMODAL_EVIDENCE_AGENT';
     delegatedAgents = [MULTIMODAL_EVIDENCE_AGENT_NAME];
+  } else if (isFinancialReasoningExecuted) {
+    phase = 'PHASE_2C_FINANCIAL_REASONING_AGENT';
+    delegatedAgents = [FINANCIAL_REASONING_AGENT_NAME];
+    if (isRegulatoryExecuted) {
+      delegatedAgents.push(REGULATORY_RETRIEVAL_AGENT_NAME);
+    }
   } else if (isRegulatoryExecuted) {
     phase = 'PHASE_2A_REGULATORY_AGENT';
     delegatedAgents = [REGULATORY_RETRIEVAL_AGENT_NAME];

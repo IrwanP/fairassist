@@ -92,6 +92,23 @@ export const SAMPLE_SCENARIO_EVIDENCE: EvidenceItem[] = [
       referenceNumber: 'BCA-PL-8839201',
       notes: 'Automated auto-debit reminder for Personal Loan instalment.'
     },
+    geminiExtractedDetails: {
+      category: 'Bank repayment notification',
+      institutionName: 'Bank Central Asia (BCA)',
+      amountDue: 1200000,
+      dueDate: '2026-08-25',
+      referenceNumber: 'BCA-PL-8839201',
+      confidence: 'High',
+      summaryStatement: 'A Bank Central Asia (BCA) repayment notification showing Rp1,200,000 due on 25 August 2026.'
+    },
+    userConfirmedDetails: {
+      category: 'Bank repayment notification',
+      institutionName: 'Bank Central Asia (BCA)',
+      amountDue: 1200000,
+      dueDate: '2026-08-25',
+      referenceNumber: 'BCA-PL-8839201',
+      notes: 'Automated auto-debit reminder for Personal Loan instalment.'
+    },
     verifiedStatus: 'Verified',
     verifiedBadge: 'Sample Evidence · Gemini Analysed'
   },
@@ -104,6 +121,23 @@ export const SAMPLE_SCENARIO_EVIDENCE: EvidenceItem[] = [
     uploadDate: '2026-08-21',
     syntheticFlag: true,
     extractedDetails: {
+      institutionName: 'AdaKami (PT Pembiayaan Digital Indonesia)',
+      amountDue: 750000,
+      dueDate: '2026-08-27',
+      referenceNumber: 'ADK-LN-3349102',
+      notes: 'Short-term cash advance instalment due before 23:59 WIB.'
+    },
+    geminiExtractedDetails: {
+      category: 'Pindar app repayment screenshot',
+      institutionName: 'AdaKami (PT Pembiayaan Digital Indonesia)',
+      amountDue: 750000,
+      dueDate: '2026-08-27',
+      referenceNumber: 'ADK-LN-3349102',
+      confidence: 'High',
+      summaryStatement: 'An AdaKami repayment notification showing Rp750,000 due on 27 August 2026.'
+    },
+    userConfirmedDetails: {
+      category: 'Pindar app repayment screenshot',
       institutionName: 'AdaKami (PT Pembiayaan Digital Indonesia)',
       amountDue: 750000,
       dueDate: '2026-08-27',

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { EvidenceItem, extractSalaryDetailsFromEvidence } from '../types';
+import { getCanonicalEvidenceDetails } from '../utils/canonicalData';
 import { 
   FileText, 
   ImageIcon, 
@@ -214,6 +215,7 @@ export const EvidenceColumn: React.FC<EvidenceColumnProps> = ({
       <div className="space-y-3">
         {evidenceList.map((item) => {
           const isPreloadedDemo = Boolean(isDemoScenario) && item.id.startsWith('ev-') && !item.id.startsWith('ev-custom-');
+          const canonical = getCanonicalEvidenceDetails(item);
 
           return (
             <div
@@ -242,14 +244,14 @@ export const EvidenceColumn: React.FC<EvidenceColumnProps> = ({
               {/* Title & Icon */}
               <div className="flex items-start gap-2">
                 <div className="p-1.5 rounded-lg bg-stone-100 text-stone-700 shrink-0 mt-0.5">
-                  {getCategoryIcon(item.category)}
+                  {getCategoryIcon(canonical.category)}
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-xs font-bold text-stone-900 truncate leading-snug group-hover:text-indigo-600 transition-colors">
-                    {item.title}
+                    {item.title || `${canonical.institutionName} Evidence`}
                   </p>
                   <p className="text-[10px] text-stone-500 truncate mt-0.5">
-                    {item.category}
+                    {canonical.category}
                   </p>
                 </div>
               </div>
@@ -263,7 +265,7 @@ export const EvidenceColumn: React.FC<EvidenceColumnProps> = ({
               </div>
 
               {/* Extracted Details / SLIK Credit Report details */}
-              {(item.category.includes('SLIK') || item.category.includes('iDeb') || item.title.includes('SLIK') || item.title.includes('iDeb')) ? (
+              {(canonical.category.includes('SLIK') || canonical.category.includes('iDeb') || item.title.includes('SLIK') || item.title.includes('iDeb')) ? (
                 <div className="pt-2 border-t border-stone-100 flex items-center justify-between text-[11px] font-semibold text-stone-800">
                   <span className="text-stone-700 text-[10px] font-medium">OJK SLIK Credit Report · 3 facilities</span>
                   <span className="text-emerald-700 text-[10px] font-bold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">Collectibility 1 – Lancar</span>
@@ -288,22 +290,22 @@ export const EvidenceColumn: React.FC<EvidenceColumnProps> = ({
                     </div>
                   );
                 }
-                return item.extractedDetails ? (
+                return (
                   <div className="pt-2 border-t border-stone-100 flex items-center justify-between text-[11px] font-semibold text-stone-800">
-                    {item.extractedDetails.amountDue !== undefined && item.extractedDetails.amountDue > 0 ? (
+                    {canonical.amountDue > 0 ? (
                       <span className="font-bold text-stone-900">
-                        Rp{item.extractedDetails.amountDue.toLocaleString('id-ID')}
+                        Rp{canonical.amountDue.toLocaleString('id-ID')}
                       </span>
                     ) : (
                       <span className="text-stone-400 font-normal">No amount</span>
                     )}
-                    {item.extractedDetails.dueDate && (
+                    {canonical.dueDate && (
                       <span className="text-stone-500 text-[10px] font-mono">
-                        Due {item.extractedDetails.dueDate}
+                        Due {canonical.dueDate}
                       </span>
                     )}
                   </div>
-                ) : null;
+                );
               })()}
 
               {/* Quick Actions Bar */}
