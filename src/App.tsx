@@ -94,6 +94,7 @@ export default function App() {
   // State integrity flags
   const [isDemoScenario, setIsDemoScenario] = useState<boolean>(false);
   const [isUserActionExecuted, setIsUserActionExecuted] = useState<boolean>(false);
+  const [approvedActionIds, setApprovedActionIds] = useState<Record<string, { isApproved: boolean; approvedAt: string }>>({});
   const [pendingRequestedLender, setPendingRequestedLender] = useState<string>('');
   const [pendingEvidenceRequest, setPendingEvidenceRequest] = useState<PendingEvidenceRequest | null>(null);
 
@@ -310,6 +311,7 @@ export default function App() {
   const handleResetDemo = () => {
     setIsDemoScenario(false);
     setIsUserActionExecuted(false);
+    setApprovedActionIds({});
     setDraftOpenTrigger(0);
     setEvidenceList([]);
     setObligations([]);
@@ -364,9 +366,17 @@ export default function App() {
   };
 
   // Trigger Gemini Analysis on Server with explicit stage sequence
-  const handleTriggerAnalysis = async (overrideContext?: FinancialContext) => {
-    const ctx = overrideContext || financialContext;
-    const hasAnyContext = ctx.evidenceList.length > 0 || ctx.obligations.length > 0 || (ctx.availableCash !== null && ctx.availableCash !== undefined) || Boolean(ctx.nextSalaryDate) || (ctx.nextSalaryAmount !== null && ctx.nextSalaryAmount !== undefined);
+  const handleTriggerAnalysis = async (overrideContext?: FinancialContext | unknown) => {
+    const isValidContext = Boolean(
+      overrideContext &&
+      typeof overrideContext === 'object' &&
+      'evidenceList' in (overrideContext as object) &&
+      Array.isArray((overrideContext as FinancialContext).evidenceList)
+    );
+    const ctx: FinancialContext = isValidContext ? (overrideContext as FinancialContext) : financialContext;
+    const safeEvidenceList = Array.isArray(ctx.evidenceList) ? ctx.evidenceList : [];
+    const safeObligations = Array.isArray(ctx.obligations) ? ctx.obligations : [];
+    const hasAnyContext = safeEvidenceList.length > 0 || safeObligations.length > 0 || (ctx.availableCash !== null && ctx.availableCash !== undefined) || Boolean(ctx.nextSalaryDate) || (ctx.nextSalaryAmount !== null && ctx.nextSalaryAmount !== undefined);
     if (!hasAnyContext) {
       setIsAnalyzing(false);
       setActivity({
@@ -387,7 +397,7 @@ export default function App() {
     const startVersion = ++contextVersionRef.current;
     
     const confirmedLenders = Array.from(new Set([
-      ...ctx.evidenceList
+      ...safeEvidenceList
         .filter((e: any) => {
           const cat = (e.category || '').toLowerCase();
           const title = (e.title || '').toLowerCase();
@@ -398,7 +408,7 @@ export default function App() {
           e.userConfirmedDetails?.institutionName,
           e.extractedDetails?.institutionName
         ]).filter(Boolean),
-      ...ctx.obligations
+      ...safeObligations
         .filter((o: any) => !o.isSalary && !(o.category || '').toLowerCase().includes('salary'))
         .map((o: any) => o.institutionName).filter(Boolean)
     ])).filter((name: string) => {
@@ -478,7 +488,7 @@ export default function App() {
           ...prev,
           quote: data.quote,
           summary: data.summary,
-          evidenceCount: data.evidenceCount || ctx.evidenceList.length,
+          evidenceCount: data.evidenceCount || safeEvidenceList.length,
           trustedSourcesCount: data.trustedSourcesCount || 3,
           generatedAt: new Date().toLocaleTimeString('id-ID') + ' WIB',
         }));
@@ -938,6 +948,35 @@ export default function App() {
     handleTriggerAnalysis(updatedContext);
   };
 
+  const handleApproveAction = (action: NextBestAction) => {
+    const timestamp = new Date().toLocaleTimeString('id-ID');
+    setApprovedActionIds((prev) => ({
+      ...prev,
+      [action.id]: {
+        isApproved: true,
+        approvedAt: timestamp,
+      },
+    }));
+
+    setActivity((prev) => ({
+      ...prev,
+      currentStage: 'ACT',
+      stages: prev.stages.map((st) =>
+        st.stage === 'ACT'
+          ? {
+              stage: 'ACT',
+              status: 'completed',
+              message: 'Borrower approved proposed action · added to Action Plan',
+              timestamp,
+            }
+          : st
+      ),
+      activeStepDescription: 'Proposed action approved · added to Action Plan',
+    }));
+
+    setActiveTab('Action Plan');
+  };
+
   const handleExecuteAction = (action: NextBestAction) => {
     if (
       action.actionCode === 'ADD_FINANCIAL_CONTEXT' ||
@@ -947,6 +986,21 @@ export default function App() {
       action.primaryActionButtonLabel.toLowerCase().includes('financial context')
     ) {
       setIsFinancialContextModalOpen(true);
+      return;
+    }
+
+    if (action.actionCode === 'AVOID_NEW_BORROWING') {
+      setActiveTab('Rules & Policies');
+      return;
+    }
+
+    if (action.id === 'action-simulate-scenarios' || action.title.toLowerCase().includes('action simulator')) {
+      setActiveTab('Action Simulator');
+      return;
+    }
+
+    if (!approvedActionIds[action.id]?.isApproved) {
+      handleApproveAction(action);
       return;
     }
 
@@ -974,7 +1028,7 @@ export default function App() {
       action.primaryActionButtonLabel.toLowerCase().includes('add')
     ) {
       handleOpenUploadModal('screenshot', targetInst);
-    } else if (action.actionCode === 'PREPARE_EXTENSION' || action.primaryActionButtonLabel.includes('View sent request')) {
+    } else if (action.actionCode === 'PREPARE_EXTENSION' || action.primaryActionButtonLabel.includes('View sent request') || action.primaryActionButtonLabel.includes('Action Plan')) {
       setActiveTab('Action Plan');
       setDraftOpenTrigger((prev) => prev + 1);
       setTimeout(() => {
@@ -985,8 +1039,6 @@ export default function App() {
           window.scrollTo({ top: y, behavior: 'smooth' });
         }
       }, 100);
-    } else if (action.actionCode === 'AVOID_NEW_BORROWING') {
-      setActiveTab('Action Simulator');
     } else {
       setSelectedLineageAction(action);
     }
@@ -1005,7 +1057,7 @@ export default function App() {
     focusTarget = 'GEMINI_ANALYSIS';
   } else if (isAnalyzing) {
     focusTarget = 'RETRIEVAL_PIPELINE';
-  } else if (nextBestActions.length > 0) {
+  } else if ((nextBestActions ?? []).length > 0) {
     focusTarget = 'NEXT_BEST_ACTION';
   } else {
     focusTarget = 'RELEVANT_INSIGHT';
@@ -1029,14 +1081,45 @@ export default function App() {
       return [];
     }
 
+    const safeNextBestActions = (nextBestActions ?? []).filter(Boolean);
+
+    // Normalization helper for full collection and property null-safety
+    const normalizeAction = (act: NextBestAction): NextBestAction => {
+      const rawLineage = act?.lineage ?? ({} as any);
+      return {
+        ...act,
+        id: act?.id || `action-${Date.now()}`,
+        category: act?.category || 'DO TODAY',
+        priorityOrder: act?.priorityOrder ?? 1,
+        title: act?.title || 'Action',
+        reason: act?.reason || '',
+        financialImpact: act?.financialImpact || '',
+        evidenceUsed: Array.isArray(act?.evidenceUsed) ? act.evidenceUsed : (act?.evidenceUsed ?? []),
+        trustedSourcesUsed: Array.isArray(act?.trustedSourcesUsed) ? act.trustedSourcesUsed : (act?.trustedSourcesUsed ?? []),
+        currentSourceStatus: act?.currentSourceStatus || 'Current',
+        requiresHumanAuthorisation: act?.requiresHumanAuthorisation ?? false,
+        authorisingEntity: act?.authorisingEntity || 'Borrower',
+        primaryActionButtonLabel: act?.primaryActionButtonLabel || 'Review action',
+        actionCode: act?.actionCode || 'CUSTOM',
+        lineage: {
+          evidenceProvided: Array.isArray(rawLineage?.evidenceProvided) ? rawLineage.evidenceProvided : (rawLineage?.evidenceProvided ?? []),
+          retrievedRules: Array.isArray(rawLineage?.retrievedRules) ? rawLineage.retrievedRules : (rawLineage?.retrievedRules ?? []),
+          policiesApplied: Array.isArray(rawLineage?.policiesApplied) ? rawLineage.policiesApplied : (rawLineage?.policiesApplied ?? []),
+          geminiReasoning: rawLineage?.geminiReasoning ?? '',
+          financialCalculation: rawLineage?.financialCalculation ?? '',
+          escalationBoundaryNote: rawLineage?.escalationBoundaryNote ?? '',
+        },
+      };
+    };
+
     // State B: Repayment evidence exists, but required cash-flow information is incomplete
     if (!decisionSupportReady) {
-      const pendingLenderAction = nextBestActions.find(
-        (a) => a.id.startsWith('act-add-') || a.title.toLowerCase().startsWith('add ')
+      const pendingLenderAction = safeNextBestActions.find(
+        (a) => a && (a.id?.startsWith('act-add-') || a.title?.toLowerCase().startsWith('add '))
       );
 
       if (pendingLenderAction) {
-        return [pendingLenderAction];
+        return [normalizeAction(pendingLenderAction)];
       }
 
       const actionTitle = hasSalaryContext
@@ -1048,17 +1131,17 @@ export default function App() {
         : "Provide your available cash balance and salary date to calculate cash-flow gap and enable scenario comparisons across your confirmed obligations.";
 
       const actionCtaLabel = hasSalaryContext
-        ? "Confirm available cash →"
-        : "Add cash & salary information →";
+        ? "Confirm available cash"
+        : "Add cash & salary information";
 
-      return [{
+      return [normalizeAction({
         id: "action-more-context-needed",
         category: "DO TODAY",
         priorityOrder: 1,
         title: actionTitle,
         reason: actionReason,
         financialImpact: "Enables precise cash-flow timing mismatch calculation.",
-        evidenceUsed: activeRepaymentEvidence.map((e) => e.title || "Repayment notice"),
+        evidenceUsed: (activeRepaymentEvidence ?? []).map((e) => e?.title || "Repayment notice"),
         trustedSourcesUsed: ["POJK No. 40 Tahun 2024", "SEOJK No. 19/SEOJK.06/2025"],
         currentSourceStatus: "Current",
         requiresHumanAuthorisation: false,
@@ -1066,7 +1149,7 @@ export default function App() {
         primaryActionButtonLabel: actionCtaLabel,
         actionCode: "ADD_FINANCIAL_CONTEXT",
         lineage: {
-          evidenceProvided: activeRepaymentEvidence.map((e) => e.title),
+          evidenceProvided: (activeRepaymentEvidence ?? []).map((e) => e?.title || "Repayment notice"),
           retrievedRules: ["POJK No. 40 Tahun 2024"],
           policiesApplied: [],
           geminiReasoning: hasSalaryContext
@@ -1075,19 +1158,22 @@ export default function App() {
           financialCalculation: `Confirmed repayment obligations: ${activeRepaymentObligationsCount}`,
           escalationBoundaryNote: "Cannot recommend payment allocation without cash availability."
         }
-      }];
+      })];
     }
 
     // State C: decisionSupportReady === true
     // Filter out zero-context or incomplete-context placeholder actions
-    const validRealActions = nextBestActions.filter(
-      (a) =>
-        a.title !== "Waiting for context" &&
-        a.id !== "action-waiting" &&
-        a.title !== "More context needed" &&
-        a.title !== "Add your cash and salary timing" &&
-        a.actionCode !== "ADD_FINANCIAL_CONTEXT"
-    );
+    const validRealActions = safeNextBestActions
+      .filter(
+        (a) =>
+          a &&
+          a.title !== "Waiting for context" &&
+          a.id !== "action-waiting" &&
+          a.title !== "More context needed" &&
+          a.title !== "Add your cash and salary timing" &&
+          a.actionCode !== "ADD_FINANCIAL_CONTEXT"
+      )
+      .map(normalizeAction);
 
     // Fallback: Generate grounded actions deterministically from canonical context
     const totalPreSalaryRepayments = activeRepaymentObligations.reduce((sum, o) => sum + (o.amount || 0), 0);
@@ -1125,15 +1211,15 @@ export default function App() {
         title: `Ask ${earliestInst} about moving the repayment date`,
         reason: reasonText,
         financialImpact: impactText,
-        evidenceUsed: activeRepaymentEvidence.map((e) => e.title || "Repayment notice"),
+        evidenceUsed: (activeRepaymentEvidence ?? []).map((e) => e?.title || "Repayment notice"),
         trustedSourcesUsed: ["POJK No. 40 Tahun 2024", "SEOJK No. 19/SEOJK.06/2025"],
         currentSourceStatus: "Current",
         requiresHumanAuthorisation: true,
         authorisingEntity: earliestInst,
-        primaryActionButtonLabel: `Prepare ${earliestInst} request →`,
+        primaryActionButtonLabel: `Prepare ${earliestInst} request`,
         actionCode: "PREPARE_EXTENSION",
         lineage: {
-          evidenceProvided: activeRepaymentEvidence.map((e) => e.title),
+          evidenceProvided: (activeRepaymentEvidence ?? []).map((e) => e?.title || "Repayment notice"),
           retrievedRules: ["POJK No. 40 Tahun 2024"],
           policiesApplied: [`${earliestInst} standard terms`],
           geminiReasoning: individualCoverage
@@ -1151,15 +1237,15 @@ export default function App() {
         title: "Compare repayment scenarios in Action Simulator",
         reason: "Evaluate 'What if?' scenarios to compare cash-flow impacts and allocation options before making payments.",
         financialImpact: "Helps identify optimal cash allocation across confirmed obligations.",
-        evidenceUsed: activeRepaymentEvidence.map((e) => e.title || "Repayment notice"),
+        evidenceUsed: (activeRepaymentEvidence ?? []).map((e) => e?.title || "Repayment notice"),
         trustedSourcesUsed: ["POJK No. 40 Tahun 2024", "SEOJK No. 19/SEOJK.06/2025"],
         currentSourceStatus: "Current",
         requiresHumanAuthorisation: false,
         authorisingEntity: "Borrower",
-        primaryActionButtonLabel: "Simulate scenarios →",
+        primaryActionButtonLabel: "Simulate scenarios",
         actionCode: "CUSTOM",
         lineage: {
-          evidenceProvided: activeRepaymentEvidence.map((e) => e.title),
+          evidenceProvided: (activeRepaymentEvidence ?? []).map((e) => e?.title || "Repayment notice"),
           retrievedRules: ["POJK No. 40 Tahun 2024"],
           policiesApplied: [],
           geminiReasoning: "Scenario comparison using confirmed cash position.",
@@ -1175,15 +1261,15 @@ export default function App() {
         title: "Avoid new high-cost short-term borrowing for now",
         reason: "Taking additional high-cost debt to cover existing repayments creates compounding interest and debt-trap risks under OJK POJK 40/2024.",
         financialImpact: "Prevents escalation of debt service obligations.",
-        evidenceUsed: activeRepaymentEvidence.map((e) => e.title || "Repayment notice"),
+        evidenceUsed: (activeRepaymentEvidence ?? []).map((e) => e?.title || "Repayment notice"),
         trustedSourcesUsed: ["POJK No. 40 Tahun 2024"],
         currentSourceStatus: "Current",
         requiresHumanAuthorisation: false,
         authorisingEntity: "Borrower",
-        primaryActionButtonLabel: "Review regulation →",
+        primaryActionButtonLabel: "Review regulation",
         actionCode: "AVOID_NEW_BORROWING",
         lineage: {
-          evidenceProvided: activeRepaymentEvidence.map((e) => e.title),
+          evidenceProvided: (activeRepaymentEvidence ?? []).map((e) => e?.title || "Repayment notice"),
           retrievedRules: ["POJK No. 40 Tahun 2024"],
           policiesApplied: [],
           geminiReasoning: "OJK consumer protection rules discourage debt-layering to cover active defaults.",
@@ -1199,15 +1285,15 @@ export default function App() {
         title: `Schedule repayment for ${earliestInst}`,
         reason: `Your available cash of Rp${cash.toLocaleString('id-ID')} is sufficient to cover your pre-salary obligations (Rp${totalPreSalaryRepayments.toLocaleString('id-ID')}).`,
         financialImpact: "Maintains account in good standing and avoids late fees.",
-        evidenceUsed: activeRepaymentEvidence.map((e) => e.title || "Repayment notice"),
+        evidenceUsed: (activeRepaymentEvidence ?? []).map((e) => e?.title || "Repayment notice"),
         trustedSourcesUsed: ["POJK No. 40 Tahun 2024"],
         currentSourceStatus: "Current",
         requiresHumanAuthorisation: true,
         authorisingEntity: earliestInst,
-        primaryActionButtonLabel: `Review payment schedule →`,
+        primaryActionButtonLabel: `Review payment schedule`,
         actionCode: "CUSTOM",
         lineage: {
-          evidenceProvided: activeRepaymentEvidence.map((e) => e.title),
+          evidenceProvided: (activeRepaymentEvidence ?? []).map((e) => e?.title || "Repayment notice"),
           retrievedRules: ["POJK No. 40 Tahun 2024"],
           policiesApplied: [`${earliestInst} standard terms`],
           geminiReasoning: "Cash flow is sufficient to cover obligations.",
@@ -1217,32 +1303,52 @@ export default function App() {
       });
     }
 
-    const actionsToReturn = validRealActions.length > 0 ? validRealActions : derivedActions;
+    let actionsToReturn: NextBestAction[] = [];
+    if (validRealActions.length > 0) {
+      actionsToReturn = [...validRealActions];
+      // For the third canonical advisory slot only, preserve the existing grounded "AVOID FOR NOW" advisory fallback if not present
+      const hasAvoidAction = actionsToReturn.some(
+        (a) => a.category === 'AVOID FOR NOW' || a.actionCode === 'AVOID_NEW_BORROWING'
+      );
+      if (!hasAvoidAction && portfolioFundingGap > 0) {
+        const avoidFallback = derivedActions.find((a) => a.category === 'AVOID FOR NOW');
+        if (avoidFallback) {
+          actionsToReturn.push(normalizeAction(avoidFallback));
+        }
+      }
+    } else {
+      actionsToReturn = derivedActions.map(normalizeAction);
+    }
 
     // First deduplicate raw actions by logical intent to prevent duplicate unsent recommendations
     const dedupedRaw: NextBestAction[] = [];
     const seenRawKeys = new Set<string>();
 
     for (const act of actionsToReturn) {
+      if (!act) continue;
+      const normalizedAct = normalizeAction(act);
       const lender = (
-        act.authorisingEntity && act.authorisingEntity !== 'Borrower'
-          ? act.authorisingEntity
+        normalizedAct.authorisingEntity && normalizedAct.authorisingEntity !== 'Borrower'
+          ? normalizedAct.authorisingEntity
           : earliestInst || 'lender'
       ).toLowerCase();
 
+      const titleLower = (normalizedAct.title || '').toLowerCase();
+      const primaryBtnLower = (normalizedAct.primaryActionButtonLabel || '').toLowerCase();
+
       const isExtensionAction =
-        act.actionCode === 'PREPARE_EXTENSION' ||
-        act.title.toLowerCase().includes('moving the repayment date') ||
-        act.title.toLowerCase().includes('payment-date adjustment') ||
-        act.primaryActionButtonLabel.toLowerCase().includes('prepare');
+        normalizedAct.actionCode === 'PREPARE_EXTENSION' ||
+        titleLower.includes('moving the repayment date') ||
+        titleLower.includes('payment-date adjustment') ||
+        primaryBtnLower.includes('prepare');
 
       const rawKey = isExtensionAction
         ? `PREPARE_EXTENSION-${lender}`
-        : act.id || `${act.actionCode || 'CUSTOM'}-${act.title.toLowerCase().trim()}`;
+        : normalizedAct.id || `${normalizedAct.actionCode || 'CUSTOM'}-${titleLower.trim()}`;
 
       if (!seenRawKeys.has(rawKey)) {
         seenRawKeys.add(rawKey);
-        dedupedRaw.push(act);
+        dedupedRaw.push(normalizedAct);
       }
     }
 
@@ -1258,11 +1364,14 @@ export default function App() {
             ? action.authorisingEntity
             : earliestInst || 'lender';
 
+        const titleLower = (action.title || '').toLowerCase();
+        const primaryBtnLower = (action.primaryActionButtonLabel || '').toLowerCase();
+
         const isExtensionAction =
           action.actionCode === 'PREPARE_EXTENSION' ||
           action.category === 'DO TODAY' ||
-          action.primaryActionButtonLabel.toLowerCase().includes('prepare') ||
-          action.title.toLowerCase().includes('moving the repayment date');
+          primaryBtnLower.includes('prepare') ||
+          titleLower.includes('moving the repayment date');
 
         if (!mappedOnce && isExtensionAction) {
           mappedOnce = true;
@@ -1275,7 +1384,7 @@ export default function App() {
             currentSourceStatus: 'ACTION SENT' as const,
             requiresHumanAuthorisation: false,
             authorisingEntity: lenderLabel,
-            primaryActionButtonLabel: 'View sent request →',
+            primaryActionButtonLabel: 'View sent request',
           };
         }
         return action;
@@ -1293,11 +1402,14 @@ export default function App() {
             : earliestInst || 'lender'
         ).toLowerCase();
 
+        const titleLower = (action.title || '').toLowerCase();
+        const primaryBtnLower = (action.primaryActionButtonLabel || '').toLowerCase();
+
         const isUnsentExtensionRecommendation =
           action.actionCode === 'PREPARE_EXTENSION' ||
-          action.primaryActionButtonLabel.toLowerCase().includes('prepare') ||
-          action.title.toLowerCase().includes('moving the repayment date') ||
-          action.title.toLowerCase().includes('ask ');
+          primaryBtnLower.includes('prepare') ||
+          titleLower.includes('moving the repayment date') ||
+          titleLower.includes('ask ');
 
         if (isUnsentExtensionRecommendation && sentLenders.has(lenderLabel)) {
           return false; // Suppress duplicate unsent recommendation
@@ -1307,7 +1419,17 @@ export default function App() {
       });
     }
 
-    return processedActions;
+    // Attach human approval flags from approvedActionIds
+    const finalMapped = processedActions.map((action) => {
+      const isApproved = Boolean(approvedActionIds[action.id]?.isApproved);
+      return {
+        ...normalizeAction(action),
+        isApprovedByUser: isApproved,
+        approvedAt: approvedActionIds[action.id]?.approvedAt,
+      };
+    });
+
+    return finalMapped;
   }, [
     hasConfirmedObligations,
     decisionSupportReady,
@@ -1318,6 +1440,7 @@ export default function App() {
     availableCash,
     nextSalaryDate,
     isUserActionExecuted,
+    approvedActionIds,
   ]);
 
   // Real deterministic navigation handler for Review Actions CTA
@@ -1350,6 +1473,10 @@ export default function App() {
     if (isUserActionExecuted) {
       return 'User action recorded · external outcome pending';
     }
+    const isAnyActionApproved = Object.values(approvedActionIds).some((a) => a.isApproved);
+    if (isAnyActionApproved) {
+      return 'Proposed action approved · added to Action Plan';
+    }
     if (!hasAnyConfirmedContext) {
       return 'Waiting for your question or evidence';
     }
@@ -1366,6 +1493,7 @@ export default function App() {
   }, [
     isAnalyzing,
     isUserActionExecuted,
+    approvedActionIds,
     activity.activeStepDescription,
     activity.stages,
     hasAnyConfirmedContext,
@@ -1379,7 +1507,8 @@ export default function App() {
   const displayActivity = useMemo(() => {
     if (isAnalyzing) return activity;
 
-    const isActCompleted = isUserActionExecuted || activity.stages.some((s) => s.stage === 'ACT' && s.status === 'completed');
+    const isAnyActionApproved = Object.values(approvedActionIds).some((a) => a.isApproved);
+    const isActCompleted = isUserActionExecuted || isAnyActionApproved || activity.stages.some((s) => s.stage === 'ACT' && s.status === 'completed');
 
     let computedStages = activity.stages;
 
@@ -1393,10 +1522,12 @@ export default function App() {
           ? {
               stage: 'ACT',
               status: 'completed',
-              message: 'User action recorded · external outcome pending',
+              message: isUserActionExecuted 
+                ? 'User action recorded · external outcome pending' 
+                : 'Borrower approved proposed action · added to Action Plan',
               timestamp: new Date().toLocaleTimeString('id-ID')
             }
-          : { stage: 'ACT', status: 'pending', message: 'Awaiting substantive user action' },
+          : { stage: 'ACT', status: 'pending', message: 'Awaiting borrower approval' },
       ];
     } else {
       computedStages = [
@@ -1414,7 +1545,7 @@ export default function App() {
       activeStepDescription: canonicalStatusDescription,
       stages: computedStages,
     };
-  }, [activity, isAnalyzing, canonicalStatusDescription, hasAnyConfirmedContext, isUserActionExecuted]);
+  }, [activity, isAnalyzing, canonicalStatusDescription, hasAnyConfirmedContext, isUserActionExecuted, approvedActionIds]);
 
   // Determine dynamic single primary next step
   const getDynamicNextStep = () => {
@@ -1568,7 +1699,7 @@ export default function App() {
                     activity={displayActivity}
                     geminiInsight={geminiInsight}
                     onOpenSimulator={() => setActiveTab('Action Simulator')}
-                    onTriggerAnalysis={handleTriggerAnalysis}
+                    onTriggerAnalysis={() => handleTriggerAnalysis()}
                     isAnalyzing={isAnalyzing}
                     isCopilotCollapsed={isCopilotCollapsed}
                   />
@@ -1580,6 +1711,7 @@ export default function App() {
                     actions={effectiveNextBestActions}
                     onOpenLineageModal={(act) => setSelectedLineageAction(act)}
                     onExecuteAction={handleExecuteAction}
+                    onApproveAction={handleApproveAction}
                   />
                 </div>
 
@@ -1645,6 +1777,7 @@ export default function App() {
 
                   const impactText = `If approved, pre-salary repayments decrease from Rp${totalPreSalaryRepayments.toLocaleString('en-US')} to Rp${remainingPreSalaryRepayments.toLocaleString('en-US')} and the repayment-only funding gap decreases from Rp${portfolioFundingGap.toLocaleString('en-US')} to Rp${remainingFundingGap.toLocaleString('en-US')}. Essential expenses are not included.`;
 
+                  const actionTimestamp = new Date().toLocaleTimeString('id-ID');
                   const newAction: NextBestAction = {
                     id: `act-request-shift-${Date.now()}`,
                     category: 'DO TODAY',
@@ -1659,8 +1792,10 @@ export default function App() {
                     currentSourceStatus: 'Current',
                     requiresHumanAuthorisation: true,
                     authorisingEntity: targetInst,
-                    primaryActionButtonLabel: `Prepare ${targetInst} request →`,
+                    primaryActionButtonLabel: `Prepare ${targetInst} request`,
                     actionCode: 'PREPARE_EXTENSION',
+                    isApprovedByUser: true,
+                    approvedAt: actionTimestamp,
                     lineage: {
                       evidenceProvided: [targetInst],
                       retrievedRules: scenario.isBank ? ['No verified institution-specific policy'] : ['POJK No. 40 Tahun 2024'],
@@ -1671,6 +1806,14 @@ export default function App() {
                     }
                   };
 
+                  setApprovedActionIds((prev) => ({
+                    ...prev,
+                    [newAction.id]: {
+                      isApproved: true,
+                      approvedAt: actionTimestamp,
+                    }
+                  }));
+
                   setNextBestActions((prev) => [newAction, ...prev.filter(a => a.id !== newAction.id && !a.title.includes('payment-date adjustment'))]);
 
                   setActivity((prev) => ({
@@ -1678,10 +1821,10 @@ export default function App() {
                     currentStage: 'ACT',
                     stages: prev.stages.map((st) => 
                       st.stage === 'ACT'
-                        ? { stage: 'ACT', status: 'pending', message: 'Awaiting substantive user action', timestamp: new Date().toLocaleTimeString('id-ID') }
+                        ? { stage: 'ACT', status: 'completed', message: 'Borrower approved proposed action · added to Action Plan', timestamp: actionTimestamp }
                         : st
                     ),
-                    activeStepDescription: `Action Plan updated · ${targetInst} request drafted`
+                    activeStepDescription: `Action Plan updated · ${targetInst} request approved`
                   }));
 
                   setActiveTab('Action Plan');
@@ -1700,6 +1843,7 @@ export default function App() {
                 onSelectScenarioType={setSelectedScenarioType}
                 onOpenUploadModal={handleOpenUploadModal}
                 onOpenFinancialContextModal={() => setIsFinancialContextModalOpen(true)}
+                onApproveAction={handleApproveAction}
                 onConfirmActionExecution={(actionId, counterparty) => {
                   setIsUserActionExecuted(true);
                   setActivity((prev) => ({

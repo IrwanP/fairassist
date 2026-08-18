@@ -2,7 +2,7 @@ import React from 'react';
 import { NextBestAction, FinancialContext, FinancialObligation } from '../types';
 import { GeminiResponse } from './GeminiResponse';
 import { formatBritishDate } from './ActionSimulator';
-import { ClipboardList, Clock, UserCheck, Printer, ShieldCheck, Copy, Check, ArrowLeft } from 'lucide-react';
+import { ClipboardList, Clock, UserCheck, Printer, ShieldCheck, Copy, Check, ArrowLeft, ArrowRight } from 'lucide-react';
 
 interface ActionPlanViewProps {
   actions: NextBestAction[];
@@ -13,6 +13,7 @@ interface ActionPlanViewProps {
   onOpenUploadModal?: (type: 'camera' | 'screenshot' | 'document') => void;
   onOpenFinancialContextModal?: () => void;
   onConfirmActionExecution?: (actionId: string, counterpartyLabel: string) => void;
+  onApproveAction?: (action: NextBestAction) => void;
 }
 
 export const ActionPlanView: React.FC<ActionPlanViewProps> = ({ 
@@ -23,7 +24,8 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
   onSelectScenarioType,
   onOpenUploadModal,
   onOpenFinancialContextModal,
-  onConfirmActionExecution
+  onConfirmActionExecution,
+  onApproveAction,
 }) => {
   const [selectedDraftObligation, setSelectedDraftObligation] = React.useState<FinancialObligation | null>(null);
   const [isDraftOpen, setIsDraftOpen] = React.useState(false);
@@ -380,7 +382,8 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
               }}
               className="px-4 py-2 bg-amber-800 hover:bg-amber-900 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
             >
-              <span>Review safer alternative →</span>
+              <span>Review safer alternative</span>
+              <ArrowRight className="w-3.5 h-3.5 shrink-0" />
             </button>
           </div>
         </div>
@@ -399,7 +402,8 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
             onClick={() => onSelectScenarioType?.('REQUEST_EXTENSION')}
             className="px-4 py-2 bg-amber-800 hover:bg-amber-900 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
           >
-            <span>Review safer alternative →</span>
+            <span>Review safer alternative</span>
+            <ArrowRight className="w-3.5 h-3.5 shrink-0" />
           </button>
         </div>
       ) : (
@@ -425,11 +429,12 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
           >
             <span>
               {isPrimarySent
-                ? 'View sent request →'
+                ? 'View sent request'
                 : `Prepare ${
                     counterpartyLabel !== 'the relevant institution' ? counterpartyLabel : 'lender'
-                  } request →`}
+                  } request`}
             </span>
+            <ArrowRight className="w-3.5 h-3.5 shrink-0" />
           </button>
         </div>
       )}
@@ -447,6 +452,7 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
 
         <div className="space-y-3">
           {deduplicatedActions.map((act, index) => {
+            const isApproved = Boolean(act.isApprovedByUser);
             let authLabel = "EXTERNAL CONFIRMATION REQUIRED";
             let authValue = act.authorisingEntity || "EasyCash";
 
@@ -465,10 +471,12 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
                 <div
                   id={index === 0 ? "action-plan-step-1" : undefined}
                   style={index === 0 ? { scrollMarginTop: '96px' } : undefined}
-                  className={`bg-white border border-stone-200/90 rounded-2xl p-4 shadow-2xs space-y-3 ${index === 0 ? 'scroll-mt-24' : ''}`}
+                  className={`bg-white border rounded-2xl p-4 shadow-2xs space-y-3 transition-all ${
+                    isApproved ? 'border-emerald-200 ring-1 ring-emerald-400/20' : 'border-stone-200/90'
+                  } ${index === 0 ? 'scroll-mt-24' : ''}`}
                 >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="w-6 h-6 rounded-full bg-stone-900 text-white flex items-center justify-center text-xs font-bold font-mono">
                         {index + 1}
                       </span>
@@ -481,6 +489,15 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
                       }`}>
                         {act.category}
                       </span>
+                      {isApproved ? (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-emerald-50 text-emerald-900 border-emerald-200 flex items-center gap-1">
+                          <Check className="w-3 h-3 text-emerald-600 stroke-[2.5]" /> Human approval confirmed
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-amber-50 text-amber-900 border-amber-200">
+                          Awaiting borrower approval
+                        </span>
+                      )}
                     </div>
                     <span className="text-xs font-mono font-semibold text-stone-500">
                       {act.currentSourceStatus}
@@ -516,16 +533,40 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
                             ? `✓ Sent by user · awaiting ${counterpartyLabel} response`
                             : `✓ Sent by user · awaiting external response`}
                         </span>
+                      ) : !isApproved && onApproveAction ? (
+                        <div className="flex items-center justify-between w-full gap-2">
+                          <span className="text-[11px] text-amber-800 font-semibold bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                            Requires borrower approval
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => onApproveAction(act)}
+                            className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shadow-2xs shrink-0"
+                          >
+                            <span>Approve & Add to Plan</span>
+                            <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+                          </button>
+                        </div>
                       ) : (
                         <span className="text-[11px] text-amber-800 font-semibold bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
-                          Requires human authorisation
+                          Requires {act.authorisingEntity || 'lender'} confirmation
                         </span>
                       )}
                     </div>
                   )}
 
                   {index > 0 && (
-                    <div className="flex justify-end pt-1">
+                    <div className="flex justify-end items-center gap-2 pt-1 flex-wrap">
+                      {!isApproved && onApproveAction && (
+                        <button
+                          type="button"
+                          onClick={() => onApproveAction(act)}
+                          className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shadow-2xs shrink-0"
+                        >
+                          <span>Approve & Add to Plan</span>
+                          <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+                        </button>
+                      )}
                       {executedActions[act.id]?.isExecuted ? (
                         <span className="text-xs font-bold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200 inline-flex items-center gap-1.5">
                           <Check className="w-3.5 h-3.5 text-emerald-600" /> Review complete · recorded by user

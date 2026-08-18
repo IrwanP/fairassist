@@ -191,6 +191,8 @@ export interface NextBestAction {
     financialCalculation: string;
     escalationBoundaryNote: string;
   };
+  isApprovedByUser?: boolean;
+  approvedAt?: string;
 }
 
 export interface SimulationScenario {
