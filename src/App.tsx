@@ -95,6 +95,7 @@ export default function App() {
   const [isDemoScenario, setIsDemoScenario] = useState<boolean>(false);
   const [isUserActionExecuted, setIsUserActionExecuted] = useState<boolean>(false);
   const [approvedActionIds, setApprovedActionIds] = useState<Record<string, { isApproved: boolean; approvedAt: string }>>({});
+  const [readyRequestActionIds, setReadyRequestActionIds] = useState<Record<string, { isReady: boolean; readyAt: string }>>({});
   const [pendingRequestedLender, setPendingRequestedLender] = useState<string>('');
   const [pendingEvidenceRequest, setPendingEvidenceRequest] = useState<PendingEvidenceRequest | null>(null);
 
@@ -312,6 +313,7 @@ export default function App() {
     setIsDemoScenario(false);
     setIsUserActionExecuted(false);
     setApprovedActionIds({});
+    setReadyRequestActionIds({});
     setDraftOpenTrigger(0);
     setEvidenceList([]);
     setObligations([]);
@@ -975,6 +977,17 @@ export default function App() {
     }));
 
     setActiveTab('Action Plan');
+  };
+
+  const handleMarkRequestReady = (actionId: string) => {
+    const timestamp = new Date().toLocaleTimeString('id-ID');
+    setReadyRequestActionIds((prev) => ({
+      ...prev,
+      [actionId]: {
+        isReady: true,
+        readyAt: timestamp,
+      },
+    }));
   };
 
   const handleExecuteAction = (action: NextBestAction) => {
@@ -1840,6 +1853,8 @@ export default function App() {
                 context={financialContext}
                 draftOpenTrigger={draftOpenTrigger}
                 selectedScenarioType={selectedScenarioType}
+                readyRequestActionIds={readyRequestActionIds}
+                onMarkRequestReady={handleMarkRequestReady}
                 onSelectScenarioType={setSelectedScenarioType}
                 onOpenUploadModal={handleOpenUploadModal}
                 onOpenFinancialContextModal={() => setIsFinancialContextModalOpen(true)}

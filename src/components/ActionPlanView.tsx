@@ -9,6 +9,8 @@ interface ActionPlanViewProps {
   context: FinancialContext;
   draftOpenTrigger?: number;
   selectedScenarioType?: 'REQUEST_EXTENSION' | 'BORROW_MORE' | null;
+  readyRequestActionIds?: Record<string, { isReady: boolean; readyAt: string }>;
+  onMarkRequestReady?: (actionId: string) => void;
   onSelectScenarioType?: (type: 'REQUEST_EXTENSION' | 'BORROW_MORE') => void;
   onOpenUploadModal?: (type: 'camera' | 'screenshot' | 'document') => void;
   onOpenFinancialContextModal?: () => void;
@@ -21,6 +23,8 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
   context,
   draftOpenTrigger,
   selectedScenarioType,
+  readyRequestActionIds,
+  onMarkRequestReady,
   onSelectScenarioType,
   onOpenUploadModal,
   onOpenFinancialContextModal,
@@ -74,7 +78,7 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
   const stepOneObligation = React.useMemo(() => {
     if (!confirmedObligations.length) return null;
 
-    const stepOneAction = actions[0];
+    const stepOneAction = Array.isArray(actions) ? actions[0] : undefined;
     if (stepOneAction?.authorisingEntity) {
       const match = confirmedObligations.find((o) => {
         const name = (o.institutionName || '').toLowerCase();
@@ -93,11 +97,27 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
     return sorted[0];
   }, [confirmedObligations, actions]);
 
+  const primaryLenderAction = React.useMemo(() => {
+    if (!Array.isArray(actions) || actions.length === 0) return null;
+    return actions.find((a) => a.actionCode === 'PREPARE_EXTENSION' || a.requiresHumanAuthorisation || Boolean(a.authorisingEntity) || a.title.toLowerCase().includes('easycash')) || actions[0] || null;
+  }, [actions]);
+
+  const targetActionId = primaryLenderAction?.id || 'action-contact-earliest';
+  const isPrimaryApproved = Boolean(primaryLenderAction?.isApprovedByUser);
+  const isRequestReady = Boolean(readyRequestActionIds?.[targetActionId]?.isReady);
+
   const targetObligation = selectedDraftObligation || stepOneObligation;
 
-  const rawLenderName = targetObligation?.institutionName || actions[0]?.authorisingEntity || '';
-  const lenderName = rawLenderName.split('(')[0].trim() || 'the relevant institution';
-  const counterpartyLabel = lenderName;
+  const rawLenderName = targetObligation?.institutionName || primaryLenderAction?.authorisingEntity || 'EasyCash';
+  const fullLenderName = React.useMemo(() => {
+    if (rawLenderName.toLowerCase().includes('easycash') || rawLenderName.toLowerCase().includes('fintopia')) {
+      return 'EasyCash (PT Indonesia Fintopia Tech)';
+    }
+    return rawLenderName;
+  }, [rawLenderName]);
+
+  const lenderShortName = fullLenderName.split('(')[0].trim() || 'EasyCash';
+  const counterpartyLabel = lenderShortName;
 
   const amountStr = targetObligation?.amount
     ? `Rp${targetObligation.amount.toLocaleString('en-US')}`
@@ -113,13 +133,9 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
     ? formatBritishDate(context.nextSalaryDate)
     : '28 August 2026';
 
-  const defaultMessage = `Hello ${lenderName} Support,\n\nI would like to ask whether my ${amountStr} repayment currently due on ${currentDueDate} can be moved to ${requestedSalaryDate}, which is my confirmed salary date.\n\nI understand that any change is subject to ${lenderName} confirmation and that the original repayment date remains applicable unless ${lenderName} confirms otherwise.\n\nThank you.`;
+  const borrowerMessage = `Hello. I have a repayment of ${amountStr} due on ${currentDueDate}. My confirmed salary date is ${requestedSalaryDate}. Could you please advise whether the repayment date can be moved to ${requestedSalaryDate}?
 
-  const [draftMessage, setDraftMessage] = React.useState(defaultMessage);
-
-  React.useEffect(() => {
-    setDraftMessage(defaultMessage);
-  }, [defaultMessage]);
+I understand that any repayment-date change requires ${fullLenderName} confirmation and that the original repayment date remains applicable unless the change is explicitly approved.`;
 
   const timelineSectionRef = React.useRef<HTMLDivElement>(null);
   const draftRef = React.useRef<HTMLDivElement>(null);
@@ -128,7 +144,8 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
     setSelectedDraftObligation(obl);
     setIsDraftOpen(true);
     setTimeout(() => {
-      draftRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const el = document.getElementById('lender-request-pack') || draftRef.current;
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 50);
   };
 
@@ -148,15 +165,52 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
 
   const handleCopyRequest = async () => {
     try {
-      await navigator.clipboard.writeText(draftMessage);
+      await navigator.clipboard.writeText(borrowerMessage);
     } catch {
-      // fallback
+      // safe fallback
     }
     setIsCopied(true);
     setTimeout(() => {
       setIsCopied(false);
     }, 2000);
   };
+
+  const handleMarkReady = (actionId: string) => {
+    if (onMarkRequestReady) {
+      onMarkRequestReady(actionId);
+    }
+  };
+
+  const relevantEvidenceItems = React.useMemo(() => {
+    const items: string[] = [];
+
+    // 1. EasyCash / Lender Repayment Notification only
+    const hasLenderNotice = (context.evidenceList || []).some((e) => {
+      const title = (e.title || '').toLowerCase();
+      const cat = (e.category || '').toLowerCase();
+      const inst = (e.userConfirmedDetails?.institutionName || e.extractedDetails?.institutionName || '').toLowerCase();
+      return inst.includes('easycash') || title.includes('easycash') || (cat.includes('repayment') && !inst.includes('bca') && !inst.includes('adakami'));
+    });
+
+    if (hasLenderNotice) {
+      items.push('EasyCash Repayment Notification');
+    } else {
+      items.push('Confirmed repayment notification');
+    }
+
+    // 2. Monthly Salary Bank Statement
+    const hasSalaryDoc = (context.evidenceList || []).some((e) => {
+      const cat = (e.category || '').toLowerCase();
+      const title = (e.title || '').toLowerCase();
+      return cat.includes('salary') || cat.includes('payroll') || cat.includes('statement') || title.includes('salary') || title.includes('payroll') || title.includes('statement');
+    });
+
+    if (hasSalaryDoc || context.nextSalaryDate) {
+      items.push('Monthly Salary Bank Statement');
+    }
+
+    return items;
+  }, [context.evidenceList, context.nextSalaryDate]);
 
   const hasConfirmedObligations = confirmedObligations.length > 0;
   const hasCashContext = context.availableCash !== null && context.availableCash !== undefined;
@@ -411,9 +465,11 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
           <div className="space-y-0.5">
             <span className="text-[10px] font-bold text-indigo-800 uppercase tracking-wider">Next Step</span>
             <h3 className="text-sm font-bold text-stone-900">
-              {isPrimarySent
-                ? `${counterpartyLabel !== 'the relevant institution' ? counterpartyLabel : 'Lender'} request sent — awaiting response`
-                : 'Prepare the next step with your lender.'}
+              {isRequestReady
+                ? 'Request prepared — ready for borrower to send'
+                : isPrimaryApproved
+                ? `Prepare the next step with ${lenderShortName}.`
+                : 'Review and approve the next step with your lender.'}
             </h3>
           </div>
           <button
@@ -421,18 +477,18 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
               if (!isDraftOpen) {
                 handleOpenDraft(stepOneObligation);
               } else {
-                const el = document.getElementById('lender-request-draft-card') || document.getElementById('step-by-step-execution-timeline');
+                const el = document.getElementById('lender-request-pack') || document.getElementById('step-by-step-execution-timeline');
                 el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
               }
             }}
             className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
           >
             <span>
-              {isPrimarySent
-                ? 'View sent request'
-                : `Prepare ${
-                    counterpartyLabel !== 'the relevant institution' ? counterpartyLabel : 'lender'
-                  } request`}
+              {isRequestReady
+                ? 'View lender request pack'
+                : isPrimaryApproved
+                ? `Prepare ${lenderShortName} request`
+                : 'View Action Plan'}
             </span>
             <ArrowRight className="w-3.5 h-3.5 shrink-0" />
           </button>
@@ -453,6 +509,7 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
         <div className="space-y-3">
           {deduplicatedActions.map((act, index) => {
             const isApproved = Boolean(act.isApprovedByUser);
+            const isActRequestReady = Boolean(readyRequestActionIds?.[act.id]?.isReady);
             let authLabel = "EXTERNAL CONFIRMATION REQUIRED";
             let authValue = act.authorisingEntity || "EasyCash";
 
@@ -498,6 +555,11 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
                           Awaiting borrower approval
                         </span>
                       )}
+                      {isActRequestReady && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-emerald-50 text-emerald-800 border-emerald-200 flex items-center gap-1">
+                          Request prepared
+                        </span>
+                      )}
                     </div>
                     <span className="text-xs font-mono font-semibold text-stone-500">
                       {act.currentSourceStatus}
@@ -526,14 +588,7 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
 
                   {index === 0 && !isDraftOpen && (
                     <div className="flex items-center justify-between pt-1 flex-wrap gap-2">
-                      {isPrimarySent ? (
-                        <span className="text-xs font-bold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200 inline-flex items-center gap-1.5">
-                          <Check className="w-3.5 h-3.5 text-emerald-600" />
-                          {counterpartyLabel !== 'the relevant institution'
-                            ? `✓ Sent by user · awaiting ${counterpartyLabel} response`
-                            : `✓ Sent by user · awaiting external response`}
-                        </span>
-                      ) : !isApproved && onApproveAction ? (
+                      {!isApproved && onApproveAction ? (
                         <div className="flex items-center justify-between w-full gap-2">
                           <span className="text-[11px] text-amber-800 font-semibold bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
                             Requires borrower approval
@@ -548,9 +603,19 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
                           </button>
                         </div>
                       ) : (
-                        <span className="text-[11px] text-amber-800 font-semibold bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
-                          Requires {act.authorisingEntity || 'lender'} confirmation
-                        </span>
+                        <div className="flex items-center justify-between w-full gap-2">
+                          <span className="text-[11px] text-amber-800 font-semibold bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                            Requires {act.authorisingEntity || 'lender'} confirmation
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenDraft(stepOneObligation)}
+                            className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shadow-2xs shrink-0"
+                          >
+                            <span>{isActRequestReady ? 'View lender request pack' : `Prepare ${lenderShortName} request`}</span>
+                            <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+                          </button>
+                        </div>
                       )}
                     </div>
                   )}
@@ -585,92 +650,144 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
                   )}
                 </div>
 
+                {/* Phase 3B — Execution-Ready Lender Request Pack */}
                 {index === 0 && isDraftOpen && (
                   <div
                     ref={draftRef}
-                    id="lender-request-draft-card"
+                    id="lender-request-pack"
                     style={{ scrollMarginTop: '96px' }}
-                    className="bg-white border border-indigo-200 rounded-2xl p-5 shadow-sm space-y-4 scroll-mt-24"
+                    className="bg-white border-2 border-indigo-200 rounded-2xl p-5 shadow-sm space-y-4 scroll-mt-24"
                   >
                     {/* Header */}
-                    <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center justify-between flex-wrap gap-2 border-b border-stone-100 pb-3">
                       <div>
-                        <div className="flex items-center gap-2">
-                          <h4 className="text-base font-bold text-stone-900">
-                            {isPrimarySent ? 'Sent Request' : 'Lender Request Draft'}
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h4 className="text-base font-bold text-stone-900 tracking-tight">
+                            Lender Request Pack — {lenderShortName}
                           </h4>
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-amber-50 text-amber-900 border-amber-200">
-                            {isPrimarySent
-                              ? `Awaiting ${counterpartyLabel !== 'the relevant institution' ? counterpartyLabel : 'EasyCash'} response`
-                              : `Requires ${counterpartyLabel !== 'the relevant institution' ? counterpartyLabel : 'institution'} confirmation`}
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-indigo-50 text-indigo-900 border-indigo-200">
+                            {fullLenderName}
                           </span>
+                          {isRequestReady && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-emerald-50 text-emerald-800 border-emerald-200 flex items-center gap-1">
+                              Request prepared
+                            </span>
+                          )}
                         </div>
                         <p className="text-xs text-stone-500 mt-0.5">
-                          {isPrimarySent
-                            ? `${counterpartyLabel !== 'the relevant institution' ? counterpartyLabel : 'EasyCash'} request sent — awaiting response.`
-                            : `Review the information before contacting ${counterpartyLabel !== 'the relevant institution' ? counterpartyLabel : 'the institution'}.`}
+                          Borrower-controlled communication package prepared from confirmed evidence.
                         </p>
                       </div>
-                    </div>
-
-                    {/* Compact Summary Grid */}
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 bg-stone-50 p-3.5 rounded-xl border border-stone-200/80 text-xs">
-                      <div>
-                        <span className="text-[10px] text-stone-400 font-bold uppercase block">Lender</span>
-                        <span className="font-semibold text-stone-800">{lenderName}</span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-stone-400 font-bold uppercase block">Repayment amount</span>
-                        <span className="font-semibold text-stone-800">{amountStr}</span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-stone-400 font-bold uppercase block">Current due date</span>
-                        <span className="font-semibold text-stone-800">{currentDueDate}</span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-stone-400 font-bold uppercase block">Requested date</span>
-                        <span className="font-semibold text-indigo-700">{requestedSalaryDate}</span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-stone-400 font-bold uppercase block">Reason</span>
-                        <span className="font-semibold text-stone-800">Align repayment with confirmed salary date</span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-stone-400 font-bold uppercase block">Request status</span>
-                        {isPrimarySent ? (
-                          <span className="font-semibold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded text-[11px] inline-flex items-center gap-1 mt-0.5">
-                            <Check className="w-3 h-3 text-emerald-600" /> Sent by user · Awaiting {counterpartyLabel !== 'the relevant institution' ? counterpartyLabel : 'EasyCash'} response
-                          </span>
-                        ) : (
-                          <span className="font-semibold text-stone-600 bg-stone-200/70 px-1.5 py-0.5 rounded text-[11px] inline-block mt-0.5">
-                            Not submitted
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Responsible Decision-Support Notice */}
-                    <div className="bg-blue-50/70 border border-blue-200/80 rounded-xl p-3 text-xs text-blue-900 leading-relaxed flex items-start gap-2">
-                      <ShieldCheck className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-                      <span>
-                        FairAssist prepares the request. {counterpartyLabel !== 'the relevant institution' ? counterpartyLabel : 'The relevant institution'} determines whether any repayment-date change is accepted. The original repayment obligation remains applicable unless {counterpartyLabel !== 'the relevant institution' ? counterpartyLabel : 'the institution'} confirms a change.
+                      <span className="text-[10px] font-bold px-2.5 py-1 rounded-md bg-amber-50 text-amber-900 border border-amber-200">
+                        {lenderShortName} confirmation required
                       </span>
                     </div>
 
-                    {/* Editable Textarea */}
-                    <div className="space-y-1.5">
-                      <label className="text-xs font-bold text-stone-700 block">
-                        Request Message
-                      </label>
-                      <textarea
-                        value={draftMessage}
-                        onChange={(e) => setDraftMessage(e.target.value)}
-                        rows={6}
-                        className="w-full text-xs font-mono bg-stone-50 border border-stone-200 rounded-xl p-3 text-stone-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 leading-relaxed resize-y"
-                      />
+                    {/* Readiness Status Banner */}
+                    <div className={`p-3 rounded-xl border text-xs flex items-center justify-between flex-wrap gap-2 ${
+                      isRequestReady
+                        ? 'bg-emerald-50/90 border-emerald-200 text-emerald-950 font-medium'
+                        : 'bg-stone-50 border-stone-200 text-stone-700'
+                    }`}>
+                      <div className="flex items-center gap-2">
+                        <div className={`w-2.5 h-2.5 rounded-full ${isRequestReady ? 'bg-emerald-500' : 'bg-stone-400'}`} />
+                        <div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider block text-stone-500">
+                            Readiness Status
+                          </span>
+                          <span className="font-semibold text-xs">
+                            {isRequestReady
+                              ? 'READY FOR BORROWER TO SEND — NOT SENT BY FAIRASSIST'
+                              : 'DRAFT PREPARED — AWAITING BORROWER REVIEW'}
+                          </span>
+                        </div>
+                      </div>
+                      {isRequestReady ? (
+                        <span className="text-[11px] font-bold text-emerald-800 bg-white/80 px-2 py-0.5 rounded border border-emerald-200">
+                          Ready to copy & send
+                        </span>
+                      ) : (
+                        <span className="text-[11px] text-stone-500">
+                          Click "Mark request ready" when satisfied
+                        </span>
+                      )}
                     </div>
 
-                    {/* Draft Actions & Copy */}
+                    {/* Structured Summary Grid */}
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 bg-stone-50/80 p-3.5 rounded-xl border border-stone-200 text-xs">
+                      <div>
+                        <span className="text-[10px] text-stone-400 font-bold uppercase block">Lender</span>
+                        <span className="font-semibold text-stone-900">{fullLenderName}</span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-stone-400 font-bold uppercase block">Repayment Amount</span>
+                        <span className="font-semibold text-stone-900">{amountStr}</span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-stone-400 font-bold uppercase block">Original Due Date</span>
+                        <span className="font-semibold text-stone-900">{currentDueDate}</span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-stone-400 font-bold uppercase block">Requested Date</span>
+                        <span className="font-semibold text-indigo-700 font-mono">{requestedSalaryDate}</span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-stone-400 font-bold uppercase block">Reason</span>
+                        <span className="font-semibold text-stone-800">Align with confirmed salary date</span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-stone-400 font-bold uppercase block">Channel</span>
+                        <span className="font-semibold text-stone-800">Official {lenderShortName} in-app / CS</span>
+                      </div>
+                    </div>
+
+                    {/* Prepared Borrower Message Block */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-bold text-stone-800 block">
+                          Prepared Borrower Message
+                        </label>
+                        <span className="text-[10px] text-stone-500">
+                          Deterministic · Derived from confirmed financial context
+                        </span>
+                      </div>
+                      <div className="bg-stone-900 text-stone-100 rounded-xl p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap select-all shadow-inner border border-stone-800">
+                        {borrowerMessage}
+                      </div>
+                    </div>
+
+                    {/* Relevant Supporting Evidence (Data Minimisation) */}
+                    <div className="space-y-2 bg-stone-50/80 p-3.5 rounded-xl border border-stone-200/80">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-stone-600 uppercase tracking-wider">
+                          Relevant Supporting Evidence (Data Minimisation)
+                        </span>
+                        <span className="text-[10px] text-stone-500 font-medium">
+                          Only information relevant to this request is included
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        {relevantEvidenceItems.map((item, idx) => (
+                          <div key={idx} className="flex items-center gap-1.5 text-xs font-medium bg-white px-2.5 py-1 rounded-lg border border-stone-200 text-stone-800 shadow-2xs">
+                            <Check className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>{item}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Safeguards & Lender Confirmation Reminder */}
+                    <div className="bg-amber-50/80 border border-amber-200/80 rounded-xl p-3.5 text-xs text-amber-950 space-y-1">
+                      <div className="flex items-center gap-1.5 font-bold text-amber-900">
+                        <ShieldCheck className="w-4 h-4 text-amber-700 shrink-0" />
+                        <span>Safeguards & Lender Confirmation Notice</span>
+                      </div>
+                      <p className="leading-relaxed pl-5.5 text-amber-900">
+                        FairAssist prepares the request pack. {lenderShortName} determines whether any repayment-date change is accepted. Until {lenderShortName} confirms a change, the original repayment obligation of {amountStr} on {currentDueDate} remains applicable. FairAssist never contacts the lender on your behalf.
+                      </p>
+                    </div>
+
+                    {/* Borrower Controls & Actions */}
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between pt-3 border-t border-stone-100 gap-3">
                       <button
                         type="button"
@@ -681,76 +798,48 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
                         <span>Back to action plan</span>
                       </button>
 
-                      <div className="flex flex-col sm:items-end gap-1">
+                      <div className="flex items-center gap-2.5 flex-wrap">
+                        {/* Copy button */}
                         <button
                           type="button"
                           onClick={handleCopyRequest}
-                          className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 self-start sm:self-auto"
+                          className="px-4 py-2 bg-stone-100 hover:bg-stone-200 active:bg-stone-300 text-stone-800 text-xs font-bold rounded-xl border border-stone-300 transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
                         >
                           {isCopied ? (
                             <>
-                              <Check className="w-3.5 h-3.5 text-emerald-300" />
+                              <Check className="w-3.5 h-3.5 text-emerald-600" />
                               <span>Copied ✓</span>
                             </>
                           ) : (
                             <>
-                              <Copy className="w-3.5 h-3.5" />
-                              <span>Copy request</span>
+                              <Copy className="w-3.5 h-3.5 text-stone-600" />
+                              <span>Copy message</span>
                             </>
                           )}
                         </button>
 
-                        <p className="text-[11px] text-stone-500 leading-tight">
-                          {isCopied ? (
-                            <span className="text-emerald-700 font-medium">
-                              Copied. Paste it into an official channel for {counterpartyLabel !== 'the relevant institution' ? counterpartyLabel : 'the relevant institution'}.
-                            </span>
-                          ) : (
-                            'Copies this request only. FairAssist does not send it.'
-                          )}
-                        </p>
+                        {/* Mark Request Ready CTA */}
+                        {isRequestReady ? (
+                          <div className="px-4 py-2 bg-emerald-50 border border-emerald-300 text-emerald-900 text-xs font-bold rounded-xl flex items-center gap-1.5">
+                            <Check className="w-3.5 h-3.5 text-emerald-600 stroke-[2.5]" />
+                            <span>Request prepared</span>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleMarkReady(targetActionId)}
+                            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Mark request ready</span>
+                          </button>
+                        )}
                       </div>
                     </div>
 
-                    {/* Human Execution Confirmation Section */}
-                    {!isPrimarySent ? (
-                      <div className="bg-stone-50 border border-stone-200/80 rounded-xl p-3.5 space-y-2 mt-2">
-                        <div className="flex items-center justify-between flex-wrap gap-2">
-                          <div className="space-y-0.5">
-                            <span className="text-[10px] font-bold text-stone-500 uppercase tracking-wider block">Human Execution Confirmation</span>
-                            <p className="text-xs text-stone-600">
-                              {counterpartyLabel !== 'the relevant institution'
-                                ? `Confirm only after you have sent it through an official channel for ${counterpartyLabel}.`
-                                : `Confirm only after you have sent it through the relevant institution's official channel.`}
-                            </p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => handleConfirmExecution('step-1-request', counterpartyLabel)}
-                            className="px-4 py-2 bg-emerald-50 hover:bg-emerald-100 active:bg-emerald-200 border border-emerald-300 text-emerald-900 text-xs font-bold rounded-xl shadow-2xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
-                          >
-                            <Check className="w-3.5 h-3.5 text-emerald-700" />
-                            <span>✓ I sent this request</span>
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="bg-emerald-50/90 border border-emerald-200 rounded-xl p-3.5 space-y-1 mt-2">
-                        <div className="flex items-center gap-2">
-                          <div className="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0">
-                            <Check className="w-2.5 h-2.5 stroke-[3]" />
-                          </div>
-                          <span className="text-xs font-bold text-emerald-950">
-                            {counterpartyLabel !== 'the relevant institution'
-                              ? `✓ Sent by user · awaiting ${counterpartyLabel} response`
-                              : `✓ Sent by user · awaiting external response`}
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-emerald-800 leading-relaxed pl-6">
-                          Action recorded in FairAssist. The original repayment obligation remains applicable until {counterpartyLabel !== 'the relevant institution' ? counterpartyLabel : 'the institution'} confirms a change.
-                        </p>
-                      </div>
-                    )}
+                    <p className="text-[11px] text-stone-500 text-right pt-1">
+                      Copies this message only. FairAssist does not send or submit anything to lenders.
+                    </p>
 
                   </div>
                 )}

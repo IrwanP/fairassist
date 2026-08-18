@@ -195,6 +195,15 @@ export interface NextBestAction {
   approvedAt?: string;
 }
 
+export interface PreparedLenderRequestState {
+  isReady: boolean;
+  preparedAt?: string;
+  lenderName?: string;
+  repaymentAmount?: number;
+  originalDueDate?: string;
+  requestedDate?: string;
+}
+
 export interface SimulationScenario {
   id: string;
   title: string;
