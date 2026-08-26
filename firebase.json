@@ -1,0 +1,8 @@
+{
+  "firestore": [
+    {
+      "database": "ai-studio-fairassist-a8a2b6ad-7b34-4311-94e3-b2b3e8cd1f86",
+      "rules": "firestore.rules"
+    }
+  ]
+}

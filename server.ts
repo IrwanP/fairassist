@@ -3,6 +3,8 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import { initializeApp as initializeAdminApp, getApps as getAdminApps, getApp as getAdminApp, App as AdminApp } from "firebase-admin/app";
+import { getAuth as getAdminAuth, DecodedIdToken } from "firebase-admin/auth";
 import {
   fairAssistRootAgent,
   runFairAssistRootAgent,
@@ -59,6 +61,68 @@ const apiRateLimiter = (maxRequests = 60, windowMs = 60 * 1000) => {
   };
 };
 
+// Initialize Firebase Admin SDK (lazy / idempotent)
+let firebaseAdminApp: AdminApp | null = null;
+function getFirebaseAdmin(): AdminApp {
+  if (!firebaseAdminApp) {
+    if (getAdminApps().length === 0) {
+      const projectId =
+        process.env.FIREBASE_PROJECT_ID ||
+        process.env.GOOGLE_CLOUD_PROJECT ||
+        process.env.VITE_FIREBASE_PROJECT_ID ||
+        "fairassist-demo";
+      try {
+        firebaseAdminApp = initializeAdminApp({
+          projectId,
+        });
+      } catch (e) {
+        console.warn("Firebase Admin initialization note:", e);
+        firebaseAdminApp = getAdminApp();
+      }
+    } else {
+      firebaseAdminApp = getAdminApp();
+    }
+  }
+  return firebaseAdminApp;
+}
+
+// Authentication Middleware to verify Firebase ID Tokens
+interface AuthenticatedRequest extends express.Request {
+  user?: DecodedIdToken;
+}
+
+const requireAuth = async (req: AuthenticatedRequest, res: express.Response, next: express.NextFunction) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({
+      error: "Authentication required. Please sign in with Google through Firebase Authentication.",
+      code: "UNAUTHENTICATED",
+    });
+  }
+
+  const idToken = authHeader.split("Bearer ")[1]?.trim();
+  if (!idToken) {
+    return res.status(401).json({
+      error: "Missing bearer token.",
+      code: "UNAUTHENTICATED",
+    });
+  }
+
+  try {
+    const adminApp = getFirebaseAdmin();
+    const decodedToken = await getAdminAuth(adminApp).verifyIdToken(idToken);
+    req.user = decodedToken;
+    return next();
+  } catch (err: any) {
+    console.error("Firebase ID Token verification error:", err?.message || err);
+    return res.status(401).json({
+      error: "Invalid or expired authentication token. Please sign in again.",
+      code: "INVALID_TOKEN",
+    });
+  }
+};
+
+
 // Initialize Gemini Client safely
 const getGeminiClient = () => {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -81,7 +145,7 @@ app.get("/api/health", (_req, res) => {
 });
 
 // 1b. Multimodal Evidence Analysis Endpoint (Google ADK Multimodal Evidence Sub-Agent)
-app.post("/api/analyze-evidence", apiRateLimiter(30, 60000), async (req, res) => {
+app.post("/api/analyze-evidence", requireAuth, apiRateLimiter(30, 60000), async (req, res) => {
   try {
     const body = req.body || {};
     const { evidenceId, analysisRequestId, uploadId, fileHash, fileBase64, mimeType, fileName, evidenceType } = body;
@@ -331,7 +395,7 @@ function getActiveRepaymentEvidence(evidenceList: any[] = []) {
 }
 
 // 3. AI Analysis endpoint (Grounding + Synthesis)
-app.post("/api/analyze", apiRateLimiter(60, 60000), async (req, res) => {
+app.post("/api/analyze", requireAuth, apiRateLimiter(60, 60000), async (req, res) => {
   try {
     const { financialContext, prompt } = req.body || {};
     const ai = getGeminiClient();
@@ -576,9 +640,17 @@ Provide structured analysis in JSON format adhering strictly to this schema:
             ? `Covers ${earliestInst}'s ${earliestAmtStr} obligation using available cash. Total portfolio funding gap remaining before salary: Rp${portfolioFundingGap.toLocaleString('id-ID')}.`
             : `Clarifies repayment options with ${earliestInst} due to individual shortfall of Rp${(earliestAmt - cash).toLocaleString('id-ID')}. Total portfolio funding gap: Rp${portfolioFundingGap.toLocaleString('id-ID')}.`;
 
+          const earliestInstSlug = earliestInst.toLowerCase().includes('easycash') || earliestInst.toLowerCase().includes('fintopia')
+            ? 'easycash'
+            : earliestInst.toLowerCase().includes('bca') || earliestInst.toLowerCase().includes('central asia')
+            ? 'bca'
+            : earliestInst.toLowerCase().includes('adakami') || earliestInst.toLowerCase().includes('pembiayaan digital')
+            ? 'adakami'
+            : earliestInst.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'lender';
+
           defaultActions = [
             {
-              id: "action-contact-earliest",
+              id: `action-extension-${earliestInstSlug}`,
               category: "DO TODAY",
               priorityOrder: 1,
               title: `Contact ${earliestInst} regarding repayment options`,
@@ -734,7 +806,7 @@ Provide structured analysis in JSON format adhering strictly to this schema:
 });
 
 // 4. Action Simulator endpoint ("What if?")
-app.post("/api/simulate", apiRateLimiter(40, 60000), async (req, res) => {
+app.post("/api/simulate", requireAuth, apiRateLimiter(40, 60000), async (req, res) => {
   try {
     const { scenarioType, additionalAmount, extensionDays, financialContext } = req.body || {};
 
@@ -865,7 +937,7 @@ app.post("/api/simulate", apiRateLimiter(40, 60000), async (req, res) => {
 });
 
 // 5. Chat endpoint with FairAssist Google ADK Root Agent
-app.post("/api/chat", apiRateLimiter(60, 60000), async (req, res) => {
+app.post("/api/chat", requireAuth, apiRateLimiter(60, 60000), async (req, res) => {
   try {
     const { message, financialContext } = req.body || {};
 

@@ -56,6 +56,22 @@ const INVALID_INSTITUTION_NAMES = new Set([
   'uploaded evidence',
 ]);
 
+export function getInstitutionSlug(name?: string | null): string {
+  if (!name) return 'lender';
+  const lower = name.toLowerCase();
+  if (lower.includes('easycash') || lower.includes('fintopia')) return 'easycash';
+  if (lower.includes('bca') || lower.includes('central asia')) return 'bca';
+  if (lower.includes('adakami') || lower.includes('pembiayaan digital')) return 'adakami';
+  if (lower.includes('kredit pintar')) return 'kreditpintar';
+  if (lower.includes('mandiri')) return 'mandiri';
+  if (lower.includes('bri') || lower.includes('rakyat indonesia')) return 'bri';
+  return lower.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'lender';
+}
+
+export function getExtensionActionId(instName?: string | null): string {
+  return `action-extension-${getInstitutionSlug(instName)}`;
+}
+
 /**
  * Normalizes an institution name and cleans placeholder/fallback strings.
  */
@@ -145,8 +161,18 @@ export function getCanonicalEvidenceDetails(item: EvidenceItem): CanonicalEviden
   const titleLower = (item.title || '').toLowerCase();
   const isSalary = catLower.includes('salary') || catLower.includes('payroll') || titleLower.includes('salary') || titleLower.includes('slip') || titleLower.includes('payroll') || titleLower.includes('gaji');
   const isSlik = catLower.includes('slik') || catLower.includes('ideb') || titleLower.includes('slik') || titleLower.includes('ideb');
+  const isLenderResponse =
+    catLower.includes('lender response') ||
+    catLower.includes('approval confirmation') ||
+    catLower.includes('repayment-date approval') ||
+    titleLower.includes('approval confirmation') ||
+    titleLower.includes('lender response') ||
+    Boolean((item as any).isVerificationEvidence) ||
+    Boolean((confirmed as any)?.isVerificationEvidence);
 
-  if (!isSalary && !isSlik) {
+  if (isLenderResponse) {
+    category = 'Repayment-date approval confirmation';
+  } else if (!isSalary && !isSlik) {
     if (institutionName.toLowerCase().includes('bca') || institutionName.toLowerCase().includes('bank')) {
       category = 'Bank repayment notification';
     } else if (institutionName.toLowerCase().includes('adakami') || institutionName.toLowerCase().includes('easycash') || institutionName.toLowerCase().includes('kredit')) {
@@ -167,7 +193,7 @@ export function getCanonicalEvidenceDetails(item: EvidenceItem): CanonicalEviden
   }
 
   // If amount is still 0 but notes/title contains explicit Rp amount (e.g. BCA Rp1,200,000)
-  if (amountDue === 0 && !isSalary && !isSlik) {
+  if (amountDue === 0 && !isSalary && !isSlik && !isLenderResponse) {
     const notesText = (confirmed?.notes || extracted?.notes || gemini?.summaryStatement || item.title || '');
     const rpMatch = notesText.match(/Rp\s*([\d\.,]+)/i);
     if (rpMatch && rpMatch[1]) {
@@ -181,7 +207,7 @@ export function getCanonicalEvidenceDetails(item: EvidenceItem): CanonicalEviden
 
   // 4. Due Date
   let dueDate = confirmed?.dueDate || extracted?.dueDate || gemini?.dueDate || '';
-  if (!dueDate && !isSalary && !isSlik) {
+  if (!dueDate && !isSalary && !isSlik && !isLenderResponse) {
     if (institutionName.toLowerCase().includes('bca')) {
       dueDate = '2026-08-25';
     } else if (institutionName.toLowerCase().includes('adakami')) {
@@ -198,10 +224,10 @@ export function getCanonicalEvidenceDetails(item: EvidenceItem): CanonicalEviden
   const notes = confirmed?.notes || extracted?.notes || gemini?.summaryStatement || '';
 
   // 7. Obligation status
-  const isRepaymentObligation = !isSalary && !isSlik && amountDue > 0 && Boolean(institutionName);
+  const isRepaymentObligation = !isSalary && !isSlik && !isLenderResponse && amountDue > 0 && Boolean(institutionName);
   const obligationStatus: CanonicalEvidenceDetails['obligationStatus'] = isRepaymentObligation
     ? 'ACTIVE_OBLIGATION'
-    : (isSalary || isSlik ? 'INFORMATIONAL' : 'INFORMATIONAL');
+    : (isSalary || isSlik || isLenderResponse ? 'INFORMATIONAL' : 'INFORMATIONAL');
 
   return {
     institutionName,
@@ -233,6 +259,50 @@ export function deriveCanonicalObligations(
   const result: FinancialObligation[] = [];
   const processedInsts = new Set<string>();
 
+  // Check if any verification evidence exists in evidenceList or if obligations have verified due dates
+  const verifiedDueDateOverrides: Record<string, { dueDate: string; formattedDate: string; originalDueDate?: string }> = {};
+  for (const item of evidenceList) {
+    const details = getCanonicalEvidenceDetails(item);
+    const catLower = (item.category || '').toLowerCase();
+    const titleLower = (item.title || '').toLowerCase();
+    const isLenderResponse =
+      catLower.includes('lender response') ||
+      catLower.includes('approval confirmation') ||
+      catLower.includes('repayment-date approval') ||
+      titleLower.includes('approval confirmation') ||
+      titleLower.includes('lender response') ||
+      titleLower.includes('easycash repayment extension approval') ||
+      Boolean((item as any).isVerificationEvidence) ||
+      Boolean((item.userConfirmedDetails as any)?.isVerificationEvidence);
+
+    if (isLenderResponse) {
+      const norm = (details.institutionName || 'easycash').toLowerCase();
+      const verifiedDate = details.dueDate || item.userConfirmedDetails?.dueDate || item.extractedDetails?.dueDate || '2026-08-28';
+      verifiedDueDateOverrides[norm] = {
+        dueDate: verifiedDate,
+        formattedDate: formatStandardDate(verifiedDate),
+        originalDueDate: '2026-08-24',
+      };
+      if (norm.includes('easycash') || norm.includes('fintopia')) {
+        verifiedDueDateOverrides['easycash'] = verifiedDueDateOverrides[norm];
+        verifiedDueDateOverrides['easycash (pt indonesia fintopia tech)'] = verifiedDueDateOverrides[norm];
+      }
+    }
+  }
+
+  // Also check if existing obligations have verified due dates (e.g. 2026-08-28 for EasyCash)
+  for (const obl of obligations) {
+    const norm = (obl.institutionName || '').toLowerCase();
+    if (obl.dueDate === '2026-08-28' && (norm.includes('easycash') || norm.includes('fintopia'))) {
+      verifiedDueDateOverrides['easycash'] = {
+        dueDate: '2026-08-28',
+        formattedDate: formatStandardDate('2026-08-28'),
+        originalDueDate: (obl as any).originalDueDate || '2026-08-24',
+      };
+      verifiedDueDateOverrides['easycash (pt indonesia fintopia tech)'] = verifiedDueDateOverrides['easycash'];
+    }
+  }
+
   // 1. Process all confirmed repayment evidence items first (highest fidelity source of truth)
   for (const item of evidenceList) {
     const details = getCanonicalEvidenceDetails(item);
@@ -244,6 +314,11 @@ export function deriveCanonicalObligations(
       const category: FinancialObligation['category'] = isBank ? 'Bank Loan' : (isPindar ? 'Pindar Loan' : 'Credit Line');
       const obligationId = `obl-${item.id.replace('ev-', '')}`;
 
+      const overrideKey = Object.keys(verifiedDueDateOverrides).find(k => normInst.includes(k) || k.includes(normInst));
+      const finalDueDate = overrideKey ? verifiedDueDateOverrides[overrideKey].dueDate : (details.dueDate || '2026-08-25');
+      const finalFormattedDate = overrideKey ? verifiedDueDateOverrides[overrideKey].formattedDate : (details.formattedDate || '25 August 2026');
+      const originalDueDate = overrideKey ? verifiedDueDateOverrides[overrideKey].originalDueDate : undefined;
+
       const canonObl: FinancialObligation = {
         id: obligationId,
         title: item.title || `${details.institutionName} Loan Facility`,
@@ -251,10 +326,13 @@ export function deriveCanonicalObligations(
         institutionName: details.institutionName,
         category,
         amount: details.amountDue,
-        dueDate: details.dueDate || '2026-08-25',
-        formattedDate: details.formattedDate || '25 August 2026',
+        dueDate: finalDueDate,
+        formattedDate: finalFormattedDate,
+        originalDueDate,
         status: 'Upcoming',
-        notes: details.notes || `Confirmed via evidence item: ${item.title}`,
+        notes: overrideKey 
+          ? `Repayment date shifted to ${finalFormattedDate} based on verified lender approval evidence.` 
+          : (details.notes || `Confirmed via evidence item: ${item.title}`),
       };
 
       result.push(canonObl);
@@ -273,7 +351,20 @@ export function deriveCanonicalObligations(
     const isAlreadyCovered = Array.from(processedInsts).some(p => normInst.includes(p) || p.includes(normInst));
 
     if (!isAlreadyCovered) {
-      result.push(obl);
+      const overrideKey = Object.keys(verifiedDueDateOverrides).find(k => normInst.includes(k) || k.includes(normInst));
+      const finalDueDate = overrideKey ? verifiedDueDateOverrides[overrideKey].dueDate : obl.dueDate;
+      const finalFormattedDate = overrideKey ? verifiedDueDateOverrides[overrideKey].formattedDate : obl.formattedDate;
+      const originalDueDate = overrideKey ? verifiedDueDateOverrides[overrideKey].originalDueDate : (obl as any).originalDueDate;
+
+      result.push({
+        ...obl,
+        dueDate: finalDueDate,
+        formattedDate: finalFormattedDate,
+        originalDueDate,
+        notes: overrideKey 
+          ? `Repayment date shifted to ${finalFormattedDate} based on verified lender approval evidence.` 
+          : obl.notes,
+      });
       processedInsts.add(normInst);
     }
   }

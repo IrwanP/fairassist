@@ -125,8 +125,18 @@ export const ActionSimulator: React.FC<ActionSimulatorProps> = ({
 
   // Pre-salary calculations
   const preSalaryObligationsTotal = useMemo(() => {
-    return confirmedObligations.reduce((sum, o) => sum + (o.amount || 0), 0);
-  }, [confirmedObligations]);
+    if (!context.nextSalaryDate) {
+      return confirmedObligations.reduce((sum, o) => sum + (o.amount || 0), 0);
+    }
+    const salaryTime = new Date(context.nextSalaryDate).getTime();
+    return confirmedObligations
+      .filter((o) => {
+        if (!o.dueDate) return true;
+        const oblTime = new Date(o.dueDate).getTime();
+        return oblTime < salaryTime;
+      })
+      .reduce((sum, o) => sum + (o.amount || 0), 0);
+  }, [confirmedObligations, context.nextSalaryDate]);
 
   const availableCash = context.availableCash ?? 0;
   const essentialExpenses = context.essentialExpenses ?? 0;

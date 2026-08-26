@@ -39,6 +39,30 @@ export const SituationColumn: React.FC<SituationColumnProps> = ({
     return activeRepaymentObligations.reduce((sum, o) => sum + (o.amount || 0), 0);
   }, [activeRepaymentObligations]);
 
+  const dueBeforeSalary = useMemo(() => {
+    if (!context.nextSalaryDate) {
+      return activeRepaymentObligations.reduce((sum, o) => sum + (o.amount || 0), 0);
+    }
+    const salaryTime = new Date(context.nextSalaryDate).getTime();
+    return activeRepaymentObligations
+      .filter((o) => {
+        if (!o.dueDate) return true;
+        const oblTime = new Date(o.dueDate).getTime();
+        return oblTime < salaryTime;
+      })
+      .reduce((sum, o) => sum + (o.amount || 0), 0);
+  }, [activeRepaymentObligations, context.nextSalaryDate]);
+
+  const dueBeforeSalaryCount = useMemo(() => {
+    if (!context.nextSalaryDate) return activeRepaymentObligations.length;
+    const salaryTime = new Date(context.nextSalaryDate).getTime();
+    return activeRepaymentObligations.filter((o) => {
+      if (!o.dueDate) return true;
+      const oblTime = new Date(o.dueDate).getTime();
+      return oblTime < salaryTime;
+    }).length;
+  }, [activeRepaymentObligations, context.nextSalaryDate]);
+
   const hasValidAnalysis = evidenceList.length > 0 || obligations.length > 0;
 
   // Sort active repayment obligations chronologically ascending by due date
@@ -133,15 +157,15 @@ export const SituationColumn: React.FC<SituationColumnProps> = ({
             Due Before Salary
           </span>
           <div className="text-2xl lg:text-3xl font-light text-amber-950 font-mono tracking-tight whitespace-nowrap">
-            {context.nextSalaryDate && obligations.length > 0 && totalNearTermDue > 0 
-              ? `Rp${(totalNearTermDue / 1000000).toFixed(2)}M` 
+            {context.nextSalaryDate && obligations.length > 0 && dueBeforeSalary > 0 
+              ? `Rp${(dueBeforeSalary / 1000000).toFixed(2)}M` 
               : 'N/A'}
           </div>
           <p className="text-[11px] text-amber-900 mt-1 leading-tight">
             {!context.nextSalaryDate 
               ? 'Salary date not confirmed' 
-              : activeRepaymentObligations.length > 0 
-              ? `${activeRepaymentObligations.length} active repayment(s)` 
+              : dueBeforeSalaryCount > 0 
+              ? `${dueBeforeSalaryCount} active repayment(s) due before salary` 
               : 'No obligations due before salary'}
           </p>
         </div>

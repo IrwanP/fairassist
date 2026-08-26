@@ -64,12 +64,15 @@ export interface EvidenceItem {
     | 'Bank statement'
     | 'iDeb SLIK – Debitur Perseorangan'
     | 'Repayment or borrowing offer'
+    | 'Lender response evidence'
+    | 'Repayment-date approval confirmation'
     | 'Other financial evidence';
   fileName: string;
   fileType: string;
   uploadDate: string;
   syntheticFlag: true; // Always true for synthetic demo data
   extractedDetails: {
+    category?: string;
     institutionName?: string;
     productName?: string;
     amountDue?: number;
@@ -114,6 +117,7 @@ export interface FinancialObligation {
   amount: number; // in IDR (Rp)
   dueDate: string; // ISO date string e.g. 2026-08-25
   formattedDate: string; // e.g. "25 August 2026"
+  originalDueDate?: string;
   isSalary?: boolean;
   status: 'Upcoming' | 'Overdue' | 'Paid' | 'Deferred' | 'Closed' | 'Historical';
   notes?: string;
@@ -203,6 +207,24 @@ export interface PreparedLenderRequestState {
   originalDueDate?: string;
   requestedDate?: string;
 }
+
+export type BorrowerOutcomeStage =
+  | 'REQUEST_READY'
+  | 'BORROWER_REPORTED_SENT'
+  | 'AWAITING_LENDER_RESPONSE'
+  | 'BORROWER_REPORTED_APPROVED_UNVERIFIED'
+  | 'BORROWER_REPORTED_NOT_APPROVED'
+  | 'LENDER_APPROVAL_VERIFIED';
+
+export interface ActionOutcomeTrackingState {
+  actionId: string;
+  stage: BorrowerOutcomeStage;
+  sentAt?: string;
+  outcomeReportedAt?: string;
+  isEvidenceVerificationRequired?: boolean;
+}
+
+export type BorrowerActionOutcome = ActionOutcomeTrackingState;
 
 export interface SimulationScenario {
   id: string;

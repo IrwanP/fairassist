@@ -1,8 +1,23 @@
 import React from 'react';
-import { NextBestAction, FinancialContext, FinancialObligation } from '../types';
+import { NextBestAction, FinancialContext, FinancialObligation, ActionOutcomeTrackingState, BorrowerOutcomeStage } from '../types';
 import { GeminiResponse } from './GeminiResponse';
 import { formatBritishDate } from './ActionSimulator';
-import { ClipboardList, Clock, UserCheck, Printer, ShieldCheck, Copy, Check, ArrowLeft, ArrowRight } from 'lucide-react';
+import { getExtensionActionId, getInstitutionSlug } from '../utils/canonicalData';
+import { 
+  ClipboardList, 
+  Clock, 
+  UserCheck, 
+  Printer, 
+  ShieldCheck, 
+  Copy, 
+  Check, 
+  ArrowLeft, 
+  ArrowRight,
+  Send,
+  AlertCircle,
+  FileText,
+  HelpCircle
+} from 'lucide-react';
 
 interface ActionPlanViewProps {
   actions: NextBestAction[];
@@ -10,9 +25,14 @@ interface ActionPlanViewProps {
   draftOpenTrigger?: number;
   selectedScenarioType?: 'REQUEST_EXTENSION' | 'BORROW_MORE' | null;
   readyRequestActionIds?: Record<string, { isReady: boolean; readyAt: string }>;
+  outcomeTracking?: Record<string, ActionOutcomeTrackingState>;
+  targetScrollActionId?: string | null;
+  onClearTargetActionId?: () => void;
   onMarkRequestReady?: (actionId: string) => void;
+  onReportSent?: (actionId: string) => void;
+  onRecordLenderOutcome?: (actionId: string, outcome: 'APPROVED' | 'NOT_APPROVED' | 'STILL_WAITING') => void;
   onSelectScenarioType?: (type: 'REQUEST_EXTENSION' | 'BORROW_MORE') => void;
-  onOpenUploadModal?: (type: 'camera' | 'screenshot' | 'document') => void;
+  onOpenUploadModal?: (type: 'camera' | 'screenshot' | 'document', isVerification?: boolean) => void;
   onOpenFinancialContextModal?: () => void;
   onConfirmActionExecution?: (actionId: string, counterpartyLabel: string) => void;
   onApproveAction?: (action: NextBestAction) => void;
@@ -24,7 +44,12 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
   draftOpenTrigger,
   selectedScenarioType,
   readyRequestActionIds,
+  outcomeTracking,
+  targetScrollActionId,
+  onClearTargetActionId,
   onMarkRequestReady,
+  onReportSent,
+  onRecordLenderOutcome,
   onSelectScenarioType,
   onOpenUploadModal,
   onOpenFinancialContextModal,
@@ -34,6 +59,8 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
   const [selectedDraftObligation, setSelectedDraftObligation] = React.useState<FinancialObligation | null>(null);
   const [isDraftOpen, setIsDraftOpen] = React.useState(false);
   const [isCopied, setIsCopied] = React.useState(false);
+  const [isRecordingOutcome, setIsRecordingOutcome] = React.useState(false);
+  const [showApprovalConfirm, setShowApprovalConfirm] = React.useState(false);
   const [executedActions, setExecutedActions] = React.useState<Record<string, { isExecuted: boolean; executedAt: string }>>({});
 
   const handleConfirmExecution = (actionId: string, counterparty: string) => {
@@ -68,25 +95,67 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
     }
   }, [selectedScenarioType]);
 
+  // Contextual scroll-to-target handler when navigated from specific action recommendations
+  React.useEffect(() => {
+    if (!targetScrollActionId) return;
+
+    const frameId = requestAnimationFrame(() => {
+      const targetId = targetScrollActionId;
+      const targetSlug = getInstitutionSlug(targetId);
+
+      const targetEl = 
+        document.getElementById(`action-plan-card-${targetId}`) ||
+        document.getElementById(targetId) ||
+        document.querySelector(`[data-action-id="${targetId}"]`) ||
+        document.querySelector(`[data-extension-id="${targetId}"]`) ||
+        (targetSlug && targetSlug !== 'lender' ? document.querySelector(`[data-lender-slug="${targetSlug}"]`) : null) ||
+        document.getElementById('action-plan-step-1') ||
+        document.getElementById('step-by-step-execution-timeline');
+
+      if (targetEl) {
+        const headerOffset = 80;
+        const elementPosition = targetEl.getBoundingClientRect().top;
+        const offsetPosition = elementPosition + window.pageYOffset - headerOffset;
+
+        window.scrollTo({
+          top: Math.max(0, offsetPosition),
+          behavior: 'smooth'
+        });
+      }
+
+      onClearTargetActionId?.();
+    });
+
+    return () => cancelAnimationFrame(frameId);
+  }, [targetScrollActionId, onClearTargetActionId]);
+
   const confirmedObligations = React.useMemo(() => {
     return (context.obligations || []).filter(
       (o) => !o.isSalary && ((o.amount !== null && o.amount !== undefined && o.amount > 0) || Boolean(o.institutionName))
     );
   }, [context.obligations]);
 
+  const primaryLenderAction = React.useMemo(() => {
+    if (!Array.isArray(actions) || actions.length === 0) return null;
+    return actions.find((a) => a.actionCode === 'PREPARE_EXTENSION' || a.requiresHumanAuthorisation || Boolean(a.authorisingEntity) || a.title.toLowerCase().includes('easycash')) || actions[0] || null;
+  }, [actions]);
+
   // Identify the exact canonical obligation that drives Step 1
   const stepOneObligation = React.useMemo(() => {
     if (!confirmedObligations.length) return null;
 
-    const stepOneAction = Array.isArray(actions) ? actions[0] : undefined;
-    if (stepOneAction?.authorisingEntity) {
+    const targetAction = primaryLenderAction || (Array.isArray(actions) ? actions[0] : undefined);
+    if (targetAction?.authorisingEntity) {
       const match = confirmedObligations.find((o) => {
         const name = (o.institutionName || '').toLowerCase();
-        const auth = stepOneAction.authorisingEntity!.toLowerCase();
+        const auth = targetAction.authorisingEntity!.toLowerCase();
         return name.includes(auth) || auth.includes(name);
       });
       if (match) return match;
     }
+
+    const easyCashObl = confirmedObligations.find((o) => (o.institutionName || '').toLowerCase().includes('easycash'));
+    if (easyCashObl) return easyCashObl;
 
     // Fallback: sort by earliest due date
     const sorted = [...confirmedObligations].sort((a, b) => {
@@ -95,20 +164,22 @@ export const ActionPlanView: React.FC<ActionPlanViewProps> = ({
       return timeA - timeB;
     });
     return sorted[0];
-  }, [confirmedObligations, actions]);
-
-  const primaryLenderAction = React.useMemo(() => {
-    if (!Array.isArray(actions) || actions.length === 0) return null;
-    return actions.find((a) => a.actionCode === 'PREPARE_EXTENSION' || a.requiresHumanAuthorisation || Boolean(a.authorisingEntity) || a.title.toLowerCase().includes('easycash')) || actions[0] || null;
-  }, [actions]);
-
-  const targetActionId = primaryLenderAction?.id || 'action-contact-earliest';
-  const isPrimaryApproved = Boolean(primaryLenderAction?.isApprovedByUser);
-  const isRequestReady = Boolean(readyRequestActionIds?.[targetActionId]?.isReady);
+  }, [confirmedObligations, actions, primaryLenderAction]);
 
   const targetObligation = selectedDraftObligation || stepOneObligation;
-
   const rawLenderName = targetObligation?.institutionName || primaryLenderAction?.authorisingEntity || 'EasyCash';
+  const targetActionId = getExtensionActionId(rawLenderName);
+
+  const isPrimaryApproved = Boolean(primaryLenderAction?.isApprovedByUser);
+  const isRequestReady = Boolean(readyRequestActionIds?.[targetActionId]?.isReady);
+  const trackingState = outcomeTracking?.[targetActionId];
+  const currentStage: BorrowerOutcomeStage | undefined = trackingState?.stage || (isRequestReady ? 'REQUEST_READY' : undefined);
+
+  const isSent = currentStage === 'BORROWER_REPORTED_SENT' || currentStage === 'AWAITING_LENDER_RESPONSE' || currentStage === 'BORROWER_REPORTED_APPROVED_UNVERIFIED' || currentStage === 'BORROWER_REPORTED_NOT_APPROVED' || currentStage === 'LENDER_APPROVAL_VERIFIED';
+  const isReportedApproved = currentStage === 'BORROWER_REPORTED_APPROVED_UNVERIFIED';
+  const isVerifiedApproved = currentStage === 'LENDER_APPROVAL_VERIFIED';
+  const isReportedNotApproved = currentStage === 'BORROWER_REPORTED_NOT_APPROVED';
+  const isAwaitingResponse = currentStage === 'BORROWER_REPORTED_SENT' || currentStage === 'AWAITING_LENDER_RESPONSE';
   const fullLenderName = React.useMemo(() => {
     if (rawLenderName.toLowerCase().includes('easycash') || rawLenderName.toLowerCase().includes('fintopia')) {
       return 'EasyCash (PT Indonesia Fintopia Tech)';
@@ -183,22 +254,54 @@ I understand that any repayment-date change requires ${fullLenderName} confirmat
 
   const relevantEvidenceItems = React.useMemo(() => {
     const items: string[] = [];
+    const targetLenderLower = (rawLenderName || '').toLowerCase();
 
-    // 1. EasyCash / Lender Repayment Notification only
-    const hasLenderNotice = (context.evidenceList || []).some((e) => {
+    // 1. Institution-scoped repayment notice / evidence
+    const lenderEvidence = (context.evidenceList || []).filter((e) => {
+      const eInst = (e.userConfirmedDetails?.institutionName || e.extractedDetails?.institutionName || e.geminiExtractedDetails?.institutionName || '').toLowerCase();
       const title = (e.title || '').toLowerCase();
       const cat = (e.category || '').toLowerCase();
-      const inst = (e.userConfirmedDetails?.institutionName || e.extractedDetails?.institutionName || '').toLowerCase();
-      return inst.includes('easycash') || title.includes('easycash') || (cat.includes('repayment') && !inst.includes('bca') && !inst.includes('adakami'));
+      const fileName = (e.fileName || '').toLowerCase();
+
+      // Skip non-lender documents (e.g. salary, slik)
+      const isSalary = cat.includes('salary') || cat.includes('payroll') || cat.includes('statement') || title.includes('salary') || title.includes('payroll');
+      const isSlik = cat.includes('slik') || cat.includes('ideb') || title.includes('slik') || title.includes('ideb');
+      if (isSalary || isSlik) return false;
+
+      // Match specifically to target lender
+      if (targetLenderLower.includes('easycash') || targetLenderLower.includes('fintopia')) {
+        return eInst.includes('easycash') || eInst.includes('fintopia') || title.includes('easycash') || fileName.includes('easycash');
+      }
+      if (targetLenderLower.includes('bca') || targetLenderLower.includes('central asia')) {
+        return eInst.includes('bca') || eInst.includes('central asia') || title.includes('bca') || fileName.includes('bca') || title.includes('bank repayment');
+      }
+      if (targetLenderLower.includes('adakami') || targetLenderLower.includes('pembiayaan digital')) {
+        return eInst.includes('adakami') || eInst.includes('pembiayaan digital') || title.includes('adakami') || fileName.includes('adakami') || title.includes('pindar active loan');
+      }
+
+      return (eInst && (targetLenderLower.includes(eInst) || eInst.includes(targetLenderLower))) ||
+             (title && targetLenderLower && title.includes(targetLenderLower));
     });
 
-    if (hasLenderNotice) {
-      items.push('EasyCash Repayment Notification');
+    if (lenderEvidence.length > 0) {
+      for (const ev of lenderEvidence) {
+        if (ev.title && !items.includes(ev.title)) {
+          items.push(ev.title);
+        }
+      }
     } else {
-      items.push('Confirmed repayment notification');
+      if (targetLenderLower.includes('easycash') || targetLenderLower.includes('fintopia')) {
+        items.push('EasyCash Repayment Notification');
+      } else if (targetLenderLower.includes('bca') || targetLenderLower.includes('central asia')) {
+        items.push('Bank Repayment SMS & App Notice');
+      } else if (targetLenderLower.includes('adakami') || targetLenderLower.includes('pembiayaan digital')) {
+        items.push('Pindar Active Loan Screen');
+      } else {
+        items.push(`${lenderShortName} Repayment Notification`);
+      }
     }
 
-    // 2. Monthly Salary Bank Statement
+    // 2. Shared Monthly Salary Bank Statement
     const hasSalaryDoc = (context.evidenceList || []).some((e) => {
       const cat = (e.category || '').toLowerCase();
       const title = (e.title || '').toLowerCase();
@@ -210,7 +313,7 @@ I understand that any repayment-date change requires ${fullLenderName} confirmat
     }
 
     return items;
-  }, [context.evidenceList, context.nextSalaryDate]);
+  }, [context.evidenceList, context.nextSalaryDate, rawLenderName, lenderShortName]);
 
   const hasConfirmedObligations = confirmedObligations.length > 0;
   const hasCashContext = context.availableCash !== null && context.availableCash !== undefined;
@@ -445,7 +548,7 @@ I understand that any repayment-date change requires ${fullLenderName} confirmat
 
       {/* Top Next Step Card */}
       {selectedScenarioType === 'BORROW_MORE' ? (
-        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-center justify-between flex-wrap gap-3">
+        <div id="scenario-b-context-banner" className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-center justify-between flex-wrap gap-3">
           <div className="space-y-0.5">
             <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Next Step</span>
             <h3 className="text-sm font-bold text-amber-950">
@@ -457,6 +560,88 @@ I understand that any repayment-date change requires ${fullLenderName} confirmat
             className="px-4 py-2 bg-amber-800 hover:bg-amber-900 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
           >
             <span>Review safer alternative</span>
+            <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+          </button>
+        </div>
+      ) : isVerifiedApproved ? (
+        <div className="bg-emerald-50/90 border border-emerald-300 rounded-2xl p-4 flex items-center justify-between flex-wrap gap-3">
+          <div className="space-y-0.5">
+            <span className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">Status: Lender Approval Verified</span>
+            <h3 className="text-sm font-bold text-emerald-950">
+              Lender approval verified — Repayment shifted to 28 August 2026
+            </h3>
+            <p className="text-xs text-emerald-800">
+              EasyCash confirmed moving {amountStr} to your salary date on 28 August 2026 based on verified evidence supplied by borrower.
+            </p>
+          </div>
+          <button
+            onClick={() => handleOpenDraft(stepOneObligation)}
+            className="px-4 py-2 bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
+          >
+            <span>View lender request pack</span>
+            <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+          </button>
+        </div>
+      ) : isReportedApproved ? (
+        <div className="bg-amber-50/90 border border-amber-300 rounded-2xl p-4 flex items-center justify-between flex-wrap gap-3">
+          <div className="space-y-0.5">
+            <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider">Action Required</span>
+            <h3 className="text-sm font-bold text-amber-950">
+              Lender approval reported by borrower — verification required
+            </h3>
+            <p className="text-xs text-amber-800">
+              The repayment date has not been changed in FairAssist yet. Add evidence to verify lender confirmation.
+            </p>
+          </div>
+          <button
+            onClick={() => onOpenUploadModal?.('screenshot', true)}
+            className="px-4 py-2 bg-amber-800 hover:bg-amber-900 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
+          >
+            <FileText className="w-3.5 h-3.5 shrink-0" />
+            <span>Add lender response evidence</span>
+            <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+          </button>
+        </div>
+      ) : isReportedNotApproved ? (
+        <div className="bg-stone-100 border border-stone-300 rounded-2xl p-4 flex items-center justify-between flex-wrap gap-3">
+          <div className="space-y-0.5">
+            <span className="text-[10px] font-bold text-stone-600 uppercase tracking-wider">Outcome Recorded</span>
+            <h3 className="text-sm font-bold text-stone-900">
+              Not approved — original repayment remains due
+            </h3>
+            <p className="text-xs text-stone-600">
+              {amountStr} remains due on {currentDueDate}.
+            </p>
+          </div>
+          <button
+            onClick={() => {
+              handleOpenDraft(stepOneObligation);
+            }}
+            className="px-4 py-2 bg-stone-800 hover:bg-stone-900 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
+          >
+            <span>View lender request pack</span>
+            <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+          </button>
+        </div>
+      ) : isAwaitingResponse ? (
+        <div className="bg-blue-50/80 border border-blue-200 rounded-2xl p-4 flex items-center justify-between flex-wrap gap-3">
+          <div className="space-y-0.5">
+            <span className="text-[10px] font-bold text-blue-800 uppercase tracking-wider">Status: Sent by borrower</span>
+            <h3 className="text-sm font-bold text-blue-950">
+              Sent by borrower — awaiting lender response
+            </h3>
+            <p className="text-xs text-blue-900">
+              FairAssist did not send this request. {amountStr} remains due on {currentDueDate} until confirmed.
+            </p>
+          </div>
+          <button
+            onClick={() => {
+              handleOpenDraft(stepOneObligation);
+              setIsRecordingOutcome(true);
+            }}
+            className="px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
+          >
+            <span>Record lender response</span>
             <ArrowRight className="w-3.5 h-3.5 shrink-0" />
           </button>
         </div>
@@ -509,7 +694,28 @@ I understand that any repayment-date change requires ${fullLenderName} confirmat
         <div className="space-y-3">
           {deduplicatedActions.map((act, index) => {
             const isApproved = Boolean(act.isApprovedByUser);
+            const actOutcome = outcomeTracking?.[act.id];
+            const actStage = actOutcome?.stage;
+            const actIsVerifiedApproved = actStage === 'LENDER_APPROVAL_VERIFIED';
+            const actIsReportedApproved = actStage === 'BORROWER_REPORTED_APPROVED_UNVERIFIED';
+            const actIsReportedNotApproved = actStage === 'BORROWER_REPORTED_NOT_APPROVED';
+            const actIsAwaitingResponse = actStage === 'BORROWER_REPORTED_SENT' || actStage === 'AWAITING_LENDER_RESPONSE';
             const isActRequestReady = Boolean(readyRequestActionIds?.[act.id]?.isReady);
+
+            const actObligation = confirmedObligations.find((o) => {
+              const oName = (o.institutionName || '').toLowerCase();
+              const actEntity = (act.authorisingEntity || '').toLowerCase();
+              const actTitle = (act.title || '').toLowerCase();
+              return (actEntity && (oName.includes(actEntity) || actEntity.includes(oName))) ||
+                     (oName && actTitle.includes(oName));
+            }) || (index === 0 ? stepOneObligation : undefined);
+
+            const actLenderShortName = (act.authorisingEntity || actObligation?.institutionName || 'lender').split('(')[0].trim();
+            const actLenderSlug = getInstitutionSlug(act.authorisingEntity || actObligation?.institutionName);
+            const actExtensionId = getExtensionActionId(act.authorisingEntity || actObligation?.institutionName);
+            const actAmountStr = actObligation?.amount ? `Rp${actObligation.amount.toLocaleString('en-US')}` : 'obligation';
+            const actDueDateStr = actObligation?.formattedDate || (actObligation?.dueDate ? formatBritishDate(actObligation.dueDate) : 'due date');
+
             let authLabel = "EXTERNAL CONFIRMATION REQUIRED";
             let authValue = act.authorisingEntity || "EasyCash";
 
@@ -526,11 +732,14 @@ I understand that any repayment-date change requires ${fullLenderName} confirmat
             return (
               <React.Fragment key={act.id}>
                 <div
-                  id={index === 0 ? "action-plan-step-1" : undefined}
-                  style={index === 0 ? { scrollMarginTop: '96px' } : undefined}
-                  className={`bg-white border rounded-2xl p-4 shadow-2xs space-y-3 transition-all ${
+                  id={index === 0 ? "action-plan-step-1" : `action-plan-card-${act.id}`}
+                  data-action-id={act.id}
+                  data-extension-id={actExtensionId}
+                  data-lender-slug={actLenderSlug}
+                  style={{ scrollMarginTop: '88px' }}
+                  className={`bg-white border rounded-2xl p-4 shadow-2xs space-y-3 transition-all scroll-mt-24 ${
                     isApproved ? 'border-emerald-200 ring-1 ring-emerald-400/20' : 'border-stone-200/90'
-                  } ${index === 0 ? 'scroll-mt-24' : ''}`}
+                  }`}
                 >
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -546,18 +755,33 @@ I understand that any repayment-date change requires ${fullLenderName} confirmat
                       }`}>
                         {act.category}
                       </span>
-                      {isApproved ? (
+                      {actIsVerifiedApproved ? (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-emerald-50 text-emerald-900 border-emerald-300 flex items-center gap-1">
+                          <Check className="w-3 h-3 text-emerald-600 stroke-[2.5]" /> Lender approval verified
+                        </span>
+                      ) : actIsReportedApproved ? (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-amber-50 text-amber-900 border-amber-300 flex items-center gap-1">
+                          <AlertCircle className="w-3 h-3 text-amber-600 stroke-[2.5]" /> Lender approval reported · verification required
+                        </span>
+                      ) : actIsReportedNotApproved ? (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-stone-100 text-stone-800 border-stone-300 flex items-center gap-1">
+                          Not approved · original repayment remains due
+                        </span>
+                      ) : actIsAwaitingResponse ? (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-blue-50 text-blue-900 border-blue-200 flex items-center gap-1">
+                          <Clock className="w-3 h-3 text-blue-600 stroke-[2.5]" /> Sent by borrower · awaiting lender response
+                        </span>
+                      ) : isActRequestReady ? (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-emerald-50 text-emerald-800 border-emerald-200 flex items-center gap-1">
+                          Request prepared
+                        </span>
+                      ) : isApproved ? (
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-emerald-50 text-emerald-900 border-emerald-200 flex items-center gap-1">
                           <Check className="w-3 h-3 text-emerald-600 stroke-[2.5]" /> Human approval confirmed
                         </span>
                       ) : (
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-amber-50 text-amber-900 border-amber-200">
                           Awaiting borrower approval
-                        </span>
-                      )}
-                      {isActRequestReady && (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded border bg-emerald-50 text-emerald-800 border-emerald-200 flex items-center gap-1">
-                          Request prepared
                         </span>
                       )}
                     </div>
@@ -586,7 +810,7 @@ I understand that any repayment-date change requires ${fullLenderName} confirmat
                     </div>
                   </div>
 
-                  {index === 0 && !isDraftOpen && (
+                  {(!isDraftOpen || selectedDraftObligation !== actObligation) && (
                     <div className="flex items-center justify-between pt-1 flex-wrap gap-2">
                       {!isApproved && onApproveAction ? (
                         <div className="flex items-center justify-between w-full gap-2">
@@ -602,49 +826,97 @@ I understand that any repayment-date change requires ${fullLenderName} confirmat
                             <ArrowRight className="w-3.5 h-3.5 shrink-0" />
                           </button>
                         </div>
-                      ) : (
+                      ) : actIsVerifiedApproved ? (
+                        <div className="flex items-center justify-between w-full gap-2">
+                          <span className="text-[11px] text-emerald-800 font-semibold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-300">
+                            Lender approval verified · Due 28 August 2026
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenDraft(actObligation || stepOneObligation)}
+                            className="px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shadow-2xs shrink-0"
+                          >
+                            <span>View verified details</span>
+                            <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+                          </button>
+                        </div>
+                      ) : actIsReportedApproved ? (
+                        <div className="flex items-center justify-between w-full gap-2">
+                          <span className="text-[11px] text-amber-800 font-semibold bg-amber-50 px-2 py-0.5 rounded border border-amber-300">
+                            Approval reported · verification required
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => onOpenUploadModal?.('screenshot', true)}
+                            className="px-3.5 py-1.5 bg-amber-800 hover:bg-amber-900 active:bg-amber-950 text-white text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shadow-2xs shrink-0"
+                          >
+                            <FileText className="w-3.5 h-3.5 shrink-0" />
+                            <span>Add lender response evidence</span>
+                            <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+                          </button>
+                        </div>
+                      ) : actIsReportedNotApproved ? (
+                        <div className="flex items-center justify-between w-full gap-2">
+                          <span className="text-[11px] text-stone-700 font-semibold bg-stone-100 px-2 py-0.5 rounded border border-stone-300">
+                            {actAmountStr} remains due on {actDueDateStr}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenDraft(actObligation || stepOneObligation)}
+                            className="px-3.5 py-1.5 bg-stone-800 hover:bg-stone-900 text-white text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shadow-2xs shrink-0"
+                          >
+                            <span>View lender request pack</span>
+                            <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+                          </button>
+                        </div>
+                      ) : actIsAwaitingResponse ? (
+                        <div className="flex items-center justify-between w-full gap-2">
+                          <span className="text-[11px] text-blue-900 font-semibold bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                            Sent by borrower · FairAssist did not send
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleOpenDraft(actObligation || stepOneObligation);
+                              setIsRecordingOutcome(true);
+                            }}
+                            className="px-3.5 py-1.5 bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shadow-2xs shrink-0"
+                          >
+                            <span>Record lender response</span>
+                            <ArrowRight className="w-3.5 h-3.5 shrink-0" />
+                          </button>
+                        </div>
+                      ) : actObligation || act.category === 'DO TODAY' || act.actionCode === 'PREPARE_EXTENSION' ? (
                         <div className="flex items-center justify-between w-full gap-2">
                           <span className="text-[11px] text-amber-800 font-semibold bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
                             Requires {act.authorisingEntity || 'lender'} confirmation
                           </span>
                           <button
                             type="button"
-                            onClick={() => handleOpenDraft(stepOneObligation)}
+                            onClick={() => handleOpenDraft(actObligation || stepOneObligation)}
                             className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shadow-2xs shrink-0"
                           >
-                            <span>{isActRequestReady ? 'View lender request pack' : `Prepare ${lenderShortName} request`}</span>
+                            <span>{isActRequestReady ? 'View lender request pack' : `Prepare ${actLenderShortName} request`}</span>
                             <ArrowRight className="w-3.5 h-3.5 shrink-0" />
                           </button>
                         </div>
-                      )}
-                    </div>
-                  )}
-
-                  {index > 0 && (
-                    <div className="flex justify-end items-center gap-2 pt-1 flex-wrap">
-                      {!isApproved && onApproveAction && (
-                        <button
-                          type="button"
-                          onClick={() => onApproveAction(act)}
-                          className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shadow-2xs shrink-0"
-                        >
-                          <span>Approve & Add to Plan</span>
-                          <ArrowRight className="w-3.5 h-3.5 shrink-0" />
-                        </button>
-                      )}
-                      {executedActions[act.id]?.isExecuted ? (
-                        <span className="text-xs font-bold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200 inline-flex items-center gap-1.5">
-                          <Check className="w-3.5 h-3.5 text-emerald-600" /> Review complete · recorded by user
-                        </span>
                       ) : (
-                        <button
-                          type="button"
-                          onClick={() => handleConfirmExecution(act.id, act.authorisingEntity ? act.authorisingEntity.split('(')[0].trim() : 'the relevant institution')}
-                          className="px-3.5 py-1.5 bg-stone-100 hover:bg-stone-200 active:bg-stone-300 text-stone-800 text-xs font-bold rounded-xl border border-stone-300 transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
-                        >
-                          <Check className="w-3.5 h-3.5 text-stone-600" />
-                          <span>✓ Mark review complete</span>
-                        </button>
+                        <div className="flex justify-end items-center gap-2 w-full">
+                          {executedActions[act.id]?.isExecuted ? (
+                            <span className="text-xs font-bold text-emerald-800 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200 inline-flex items-center gap-1.5">
+                              <Check className="w-3.5 h-3.5 text-emerald-600" /> Review complete · recorded by user
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleConfirmExecution(act.id, act.authorisingEntity ? act.authorisingEntity.split('(')[0].trim() : 'the relevant institution')}
+                              className="px-3.5 py-1.5 bg-stone-100 hover:bg-stone-200 active:bg-stone-300 text-stone-800 text-xs font-bold rounded-xl border border-stone-300 transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
+                            >
+                              <Check className="w-3.5 h-3.5 text-stone-600" />
+                              <span>✓ Mark review complete</span>
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
                   )}
@@ -685,24 +957,58 @@ I understand that any repayment-date change requires ${fullLenderName} confirmat
 
                     {/* Readiness Status Banner */}
                     <div className={`p-3 rounded-xl border text-xs flex items-center justify-between flex-wrap gap-2 ${
-                      isRequestReady
+                      isReportedApproved
+                        ? 'bg-amber-50/90 border-amber-300 text-amber-950 font-medium'
+                        : isReportedNotApproved
+                        ? 'bg-stone-100 border-stone-300 text-stone-800 font-medium'
+                        : isAwaitingResponse
+                        ? 'bg-blue-50/90 border-blue-200 text-blue-950 font-medium'
+                        : isRequestReady
                         ? 'bg-emerald-50/90 border-emerald-200 text-emerald-950 font-medium'
                         : 'bg-stone-50 border-stone-200 text-stone-700'
                     }`}>
                       <div className="flex items-center gap-2">
-                        <div className={`w-2.5 h-2.5 rounded-full ${isRequestReady ? 'bg-emerald-500' : 'bg-stone-400'}`} />
+                        <div className={`w-2.5 h-2.5 rounded-full ${
+                          isReportedApproved 
+                            ? 'bg-amber-500' 
+                            : isReportedNotApproved
+                            ? 'bg-stone-500'
+                            : isAwaitingResponse
+                            ? 'bg-blue-500'
+                            : isRequestReady
+                            ? 'bg-emerald-500'
+                            : 'bg-stone-400'
+                        }`} />
                         <div>
                           <span className="text-[10px] font-bold uppercase tracking-wider block text-stone-500">
-                            Readiness Status
+                            Readiness & Outcome Status
                           </span>
                           <span className="font-semibold text-xs">
-                            {isRequestReady
+                            {isReportedApproved
+                              ? 'LENDER APPROVAL REPORTED BY BORROWER — VERIFICATION REQUIRED'
+                              : isReportedNotApproved
+                              ? 'NOT APPROVED — ORIGINAL REPAYMENT REMAINS DUE'
+                              : isAwaitingResponse
+                              ? 'SENT BY BORROWER — AWAITING LENDER RESPONSE'
+                              : isRequestReady
                               ? 'READY FOR BORROWER TO SEND — NOT SENT BY FAIRASSIST'
                               : 'DRAFT PREPARED — AWAITING BORROWER REVIEW'}
                           </span>
                         </div>
                       </div>
-                      {isRequestReady ? (
+                      {isReportedApproved ? (
+                        <span className="text-[11px] font-bold text-amber-900 bg-white px-2 py-0.5 rounded border border-amber-300">
+                          Verification required
+                        </span>
+                      ) : isReportedNotApproved ? (
+                        <span className="text-[11px] font-bold text-stone-800 bg-white px-2 py-0.5 rounded border border-stone-300">
+                          Original due date active
+                        </span>
+                      ) : isAwaitingResponse ? (
+                        <span className="text-[11px] font-bold text-blue-900 bg-white px-2 py-0.5 rounded border border-blue-200">
+                          Awaiting lender response
+                        </span>
+                      ) : isRequestReady ? (
                         <span className="text-[11px] font-bold text-emerald-800 bg-white/80 px-2 py-0.5 rounded border border-emerald-200">
                           Ready to copy & send
                         </span>
@@ -818,13 +1124,8 @@ I understand that any repayment-date change requires ${fullLenderName} confirmat
                           )}
                         </button>
 
-                        {/* Mark Request Ready CTA */}
-                        {isRequestReady ? (
-                          <div className="px-4 py-2 bg-emerald-50 border border-emerald-300 text-emerald-900 text-xs font-bold rounded-xl flex items-center gap-1.5">
-                            <Check className="w-3.5 h-3.5 text-emerald-600 stroke-[2.5]" />
-                            <span>Request prepared</span>
-                          </div>
-                        ) : (
+                        {/* Phase 3B/3C State Controls */}
+                        {!isRequestReady ? (
                           <button
                             type="button"
                             onClick={() => handleMarkReady(targetActionId)}
@@ -833,13 +1134,233 @@ I understand that any repayment-date change requires ${fullLenderName} confirmat
                             <Check className="w-3.5 h-3.5" />
                             <span>Mark request ready</span>
                           </button>
+                        ) : !isSent ? (
+                          <>
+                            <div className="px-3 py-2 bg-emerald-50 border border-emerald-300 text-emerald-900 text-xs font-bold rounded-xl flex items-center gap-1.5">
+                              <Check className="w-3.5 h-3.5 text-emerald-600 stroke-[2.5]" />
+                              <span>Request prepared</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onReportSent?.(targetActionId);
+                              }}
+                              className="px-4 py-2 bg-blue-700 hover:bg-blue-800 active:bg-blue-900 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              <span>I sent this request myself</span>
+                            </button>
+                          </>
+                        ) : isAwaitingResponse ? (
+                          <>
+                            <div className="px-3 py-2 bg-blue-50 border border-blue-300 text-blue-900 text-xs font-bold rounded-xl flex items-center gap-1.5">
+                              <Clock className="w-3.5 h-3.5 text-blue-600 stroke-[2.5]" />
+                              <span>Sent by borrower</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsRecordingOutcome(true);
+                                setShowApprovalConfirm(false);
+                              }}
+                              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
+                            >
+                              <UserCheck className="w-3.5 h-3.5" />
+                              <span>Record lender response</span>
+                            </button>
+                          </>
+                        ) : isVerifiedApproved ? (
+                          <>
+                            <div className="px-3 py-2 bg-emerald-50 border border-emerald-300 text-emerald-900 text-xs font-bold rounded-xl flex items-center gap-1.5">
+                              <Check className="w-3.5 h-3.5 text-emerald-600 stroke-[2.5]" />
+                              <span>Lender approval verified</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsRecordingOutcome(true);
+                                setShowApprovalConfirm(false);
+                              }}
+                              className="px-3.5 py-2 bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-bold rounded-xl border border-stone-300 transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
+                            >
+                              <span>Update response</span>
+                            </button>
+                          </>
+                        ) : isReportedApproved ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => onOpenUploadModal?.('screenshot', true)}
+                              className="px-4 py-2 bg-amber-800 hover:bg-amber-900 active:bg-amber-950 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
+                            >
+                              <FileText className="w-3.5 h-3.5" />
+                              <span>Add lender response evidence</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsRecordingOutcome(true);
+                                setShowApprovalConfirm(false);
+                              }}
+                              className="px-3.5 py-2 bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-bold rounded-xl border border-stone-300 transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
+                            >
+                              <span>Update response</span>
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <div className="px-3 py-2 bg-stone-100 border border-stone-300 text-stone-800 text-xs font-bold rounded-xl flex items-center gap-1.5">
+                              <span>Not approved</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsRecordingOutcome(true);
+                                setShowApprovalConfirm(false);
+                              }}
+                              className="px-3.5 py-2 bg-stone-100 hover:bg-stone-200 text-stone-800 text-xs font-bold rounded-xl border border-stone-300 transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
+                            >
+                              <span>Update response</span>
+                            </button>
+                          </>
                         )}
                       </div>
                     </div>
 
+                    {/* Stage Footnote / Attribution notice */}
                     <p className="text-[11px] text-stone-500 text-right pt-1">
-                      Copies this message only. FairAssist does not send or submit anything to lenders.
+                      {isVerifiedApproved
+                        ? 'Lender approval verified via borrower-supplied evidence. FairAssist did not contact EasyCash directly. Repayment due date updated to 28 August 2026.'
+                        : isReportedApproved
+                        ? 'Lender approval reported by borrower — verification required. The repayment date has not been changed in FairAssist yet.'
+                        : isReportedNotApproved
+                        ? `Not approved — original repayment remains due. ${amountStr} remains due on ${currentDueDate}.`
+                        : isAwaitingResponse
+                        ? 'Sent by borrower. FairAssist did not send this request. Repayment remains due until confirmed.'
+                        : isRequestReady
+                        ? "FairAssist did not send this request. Clicking 'I sent this request myself' records your action locally."
+                        : 'Copies this message only. FairAssist does not send or submit anything to lenders.'}
                     </p>
+
+                    {/* Phase 3C — Record Lender Response Choice Interface */}
+                    {isRecordingOutcome && (
+                      <div className="mt-4 pt-4 border-t-2 border-indigo-100 bg-stone-50/90 rounded-xl p-4 space-y-4">
+                        {showApprovalConfirm ? (
+                          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-3 text-amber-950">
+                            <div className="flex items-center gap-2 font-bold text-sm text-amber-900">
+                              <ShieldCheck className="w-4 h-4 text-amber-700 shrink-0" />
+                              <span>Confirm Reported Approval</span>
+                            </div>
+                            <p className="text-xs leading-relaxed text-amber-900 font-medium">
+                              Confirm that EasyCash approved moving the Rp650,000 repayment from 24 August 2026 to 28 August 2026.
+                            </p>
+                            <p className="text-[11px] text-amber-800 leading-relaxed">
+                              This records a borrower-reported approval. The repayment date will not be changed in FairAssist until confirmed evidence is added and verified.
+                            </p>
+                            <div className="flex items-center gap-2.5 pt-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onRecordLenderOutcome?.(targetActionId, 'APPROVED');
+                                  setIsRecordingOutcome(false);
+                                  setShowApprovalConfirm(false);
+                                }}
+                                className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5 active:scale-95"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                                <span>Confirm reported approval</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setShowApprovalConfirm(false)}
+                                className="px-4 py-2 bg-white hover:bg-stone-100 text-stone-700 text-xs font-bold rounded-xl border border-stone-300 transition-all cursor-pointer active:scale-95"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <h5 className="text-xs font-bold text-stone-900 uppercase tracking-wider">
+                                  Record Lender Response
+                                </h5>
+                                <p className="text-xs text-stone-500">
+                                  Select the outcome reported by {lenderShortName} for your request to move the repayment to {requestedSalaryDate}:
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setIsRecordingOutcome(false)}
+                                className="text-xs text-stone-500 hover:text-stone-700 font-semibold px-2 py-1 cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                              {/* Option 1: Approved */}
+                              <button
+                                type="button"
+                                onClick={() => setShowApprovalConfirm(true)}
+                                className="p-3 bg-white hover:bg-emerald-50/70 border border-stone-200 hover:border-emerald-300 rounded-xl text-left transition-all cursor-pointer shadow-2xs group space-y-1"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-bold text-emerald-900 group-hover:text-emerald-950">
+                                    Approved
+                                  </span>
+                                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                </div>
+                                <p className="text-[11px] text-stone-500 leading-snug">
+                                  {lenderShortName} agreed to shift the repayment date to {requestedSalaryDate}.
+                                </p>
+                              </button>
+
+                              {/* Option 2: Not approved */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onRecordLenderOutcome?.(targetActionId, 'NOT_APPROVED');
+                                  setIsRecordingOutcome(false);
+                                }}
+                                className="p-3 bg-white hover:bg-stone-100 border border-stone-200 hover:border-stone-400 rounded-xl text-left transition-all cursor-pointer shadow-2xs group space-y-1"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-bold text-stone-900">
+                                    Not approved
+                                  </span>
+                                  <AlertCircle className="w-3.5 h-3.5 text-stone-500" />
+                                </div>
+                                <p className="text-[11px] text-stone-500 leading-snug">
+                                  {lenderShortName} declined. {amountStr} remains due on {currentDueDate}.
+                                </p>
+                              </button>
+
+                              {/* Option 3: Still waiting */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onRecordLenderOutcome?.(targetActionId, 'STILL_WAITING');
+                                  setIsRecordingOutcome(false);
+                                }}
+                                className="p-3 bg-white hover:bg-blue-50/70 border border-stone-200 hover:border-blue-300 rounded-xl text-left transition-all cursor-pointer shadow-2xs group space-y-1"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-bold text-blue-900 group-hover:text-blue-950">
+                                    Still waiting
+                                  </span>
+                                  <Clock className="w-3.5 h-3.5 text-blue-600" />
+                                </div>
+                                <p className="text-[11px] text-stone-500 leading-snug">
+                                  No response yet. Awaiting lender response.
+                                </p>
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                   </div>
                 )}

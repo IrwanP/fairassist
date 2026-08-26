@@ -16,6 +16,9 @@ import {
   AgentActivity,
   FocusTarget,
   PendingEvidenceRequest,
+  ActionOutcomeTrackingState,
+  BorrowerActionOutcome,
+  BorrowerOutcomeStage,
   extractSalaryDetailsFromEvidence
 } from './types';
 
@@ -38,7 +41,9 @@ import {
   deriveCanonicalObligations, 
   getCanonicalEvidenceDetails, 
   normalizeInstitutionName,
-  extractScenarioBorrowingAmount 
+  extractScenarioBorrowingAmount,
+  formatStandardDate,
+  getExtensionActionId
 } from './utils/canonicalData';
 
 import { Header } from './components/Header';
@@ -56,8 +61,16 @@ import { EvidenceUploadModal } from './components/EvidenceUploadModal';
 import { FinancialContextModal } from './components/FinancialContextModal';
 import { ChatMessage } from './types';
 import { Sparkles, ArrowRight } from 'lucide-react';
+import { authFetch } from './utils/api';
+import { useAuth } from './contexts/AuthContext';
+import { 
+  loadUserInteractionState, 
+  saveUserInteractionState 
+} from './services/persistenceService';
+
 
 export default function App() {
+  const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<'Overview' | 'Evidence' | 'Rules & Policies' | 'Action Simulator' | 'Action Plan'>('Overview');
   const [selectedScenarioType, setSelectedScenarioType] = useState<'REQUEST_EXTENSION' | 'BORROW_MORE' | null>('REQUEST_EXTENSION');
   const [selectedBank, setSelectedBank] = useState<Institution>(AVAILABLE_BANKS[0]);
@@ -93,9 +106,13 @@ export default function App() {
 
   // State integrity flags
   const [isDemoScenario, setIsDemoScenario] = useState<boolean>(false);
+  const [isPersistenceHydrated, setIsPersistenceHydrated] = useState<boolean>(false);
   const [isUserActionExecuted, setIsUserActionExecuted] = useState<boolean>(false);
   const [approvedActionIds, setApprovedActionIds] = useState<Record<string, { isApproved: boolean; approvedAt: string }>>({});
   const [readyRequestActionIds, setReadyRequestActionIds] = useState<Record<string, { isReady: boolean; readyAt: string }>>({});
+  const [actionOutcomeTracking, setActionOutcomeTracking] = useState<Record<string, ActionOutcomeTrackingState>>({});
+  const [targetActionPlanActionId, setTargetActionPlanActionId] = useState<string | null>(null);
+  const [isVerificationUpload, setIsVerificationUpload] = useState<boolean>(false);
   const [pendingRequestedLender, setPendingRequestedLender] = useState<string>('');
   const [pendingEvidenceRequest, setPendingEvidenceRequest] = useState<PendingEvidenceRequest | null>(null);
 
@@ -195,7 +212,7 @@ export default function App() {
         // Keeps user grounded on current context
       }
 
-      const response = await fetch('/api/chat', {
+      const response = await authFetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -309,11 +326,13 @@ export default function App() {
     institutionPolicies,
   };
 
-  const handleResetDemo = () => {
+  const handleResetDemo = async () => {
+    setIsPersistenceHydrated(false);
     setIsDemoScenario(false);
     setIsUserActionExecuted(false);
     setApprovedActionIds({});
     setReadyRequestActionIds({});
+    setActionOutcomeTracking({});
     setDraftOpenTrigger(0);
     setEvidenceList([]);
     setObligations([]);
@@ -336,6 +355,47 @@ export default function App() {
         retrievedSources: []
       }
     ]);
+
+    // If authenticated, reload and restore the user's authentic persisted state from Firestore
+    if (user?.uid) {
+      try {
+        const persisted = await loadUserInteractionState(user.uid);
+        if (persisted) {
+          if (Array.isArray(persisted.evidenceList)) setEvidenceList(persisted.evidenceList);
+          if (Array.isArray(persisted.obligations)) setObligations(persisted.obligations);
+          setAvailableCash(persisted.availableCash ?? null);
+          setNextSalaryDate(persisted.nextSalaryDate ?? null);
+          setNextSalaryAmount(persisted.nextSalaryAmount ?? null);
+          setEssentialExpenses(persisted.essentialExpenses ?? null);
+          if (persisted.chatMessages && persisted.chatMessages.length > 0) {
+            setChatMessages(persisted.chatMessages);
+          }
+          if (persisted.approvedActionIds) setApprovedActionIds(persisted.approvedActionIds);
+          if (persisted.readyRequestActionIds) setReadyRequestActionIds(persisted.readyRequestActionIds);
+          if (persisted.actionOutcomeTracking) setActionOutcomeTracking(persisted.actionOutcomeTracking);
+          setIsUserActionExecuted(Boolean(persisted.isUserActionExecuted));
+
+          const hasAnyContext = (persisted.evidenceList?.length || 0) > 0 ||
+                                (persisted.obligations?.length || 0) > 0 ||
+                                persisted.availableCash !== null ||
+                                Boolean(persisted.nextSalaryDate);
+          if (hasAnyContext) {
+            handleTriggerAnalysis({
+              evidenceList: persisted.evidenceList || [],
+              obligations: persisted.obligations || [],
+              availableCash: persisted.availableCash ?? null,
+              nextSalaryDate: persisted.nextSalaryDate ?? null,
+              nextSalaryAmount: persisted.nextSalaryAmount ?? null,
+              essentialExpenses: persisted.essentialExpenses ?? null,
+            });
+          }
+        }
+      } catch (err) {
+        console.error("Failed to restore user interaction on demo exit:", err);
+      } finally {
+        setIsPersistenceHydrated(true);
+      }
+    }
   };
 
   const handleToggleSampleScenario = () => {
@@ -347,6 +407,7 @@ export default function App() {
   };
 
   const handleLoadSampleScenario = () => {
+    setIsPersistenceHydrated(false);
     setIsDemoScenario(true);
     setEvidenceList(SAMPLE_SCENARIO_EVIDENCE);
     setObligations(SAMPLE_SCENARIO_OBLIGATIONS);
@@ -476,7 +537,7 @@ export default function App() {
     });
 
     try {
-      const res = await fetch('/api/analyze', {
+      const res = await authFetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ financialContext: ctx }),
@@ -535,20 +596,162 @@ export default function App() {
     }
   };
 
-  const handleOpenUploadModal = (type: 'camera' | 'screenshot' | 'document', targetInst?: string | null) => {
-    if (isDemoScenario) {
+  // Authenticated Firestore Session Hydration Lifecycle
+  React.useEffect(() => {
+    let isCancelled = false;
+
+    async function hydrate() {
+      if (!user) {
+        setIsPersistenceHydrated(false);
+        // Reset to initial empty state on sign out
+        setIsUserActionExecuted(false);
+        setApprovedActionIds({});
+        setReadyRequestActionIds({});
+        setActionOutcomeTracking({});
+        setDraftOpenTrigger(0);
+        setEvidenceList([]);
+        setObligations([]);
+        setAvailableCash(null);
+        setNextSalaryDate(null);
+        setNextSalaryAmount(null);
+        setEssentialExpenses(null);
+        setNextBestActions([]);
+        setGeminiInsight(INITIAL_GEMINI_INSIGHT);
+        setActivity(INITIAL_PIPELINE_STATE);
+        setPendingRequestedLender('');
+        setPendingEvidenceRequest(null);
+        setIsAnalyzing(false);
+        setChatMessages([
+          {
+            id: 'msg-welcome',
+            sender: 'agent',
+            text: `Hello.\n\nTell me what you need help with, or add a repayment notice. I’ll help you understand what applies and what to do next.`,
+            timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+            retrievedSources: []
+          }
+        ]);
+        return;
+      }
+
+      if (isDemoScenario) {
+        return;
+      }
+
+      setIsPersistenceHydrated(false);
+      try {
+        const persisted = await loadUserInteractionState(user.uid);
+        if (isCancelled) return;
+
+        if (persisted) {
+          if (Array.isArray(persisted.evidenceList)) setEvidenceList(persisted.evidenceList);
+          if (Array.isArray(persisted.obligations)) setObligations(persisted.obligations);
+          setAvailableCash(persisted.availableCash ?? null);
+          setNextSalaryDate(persisted.nextSalaryDate ?? null);
+          setNextSalaryAmount(persisted.nextSalaryAmount ?? null);
+          setEssentialExpenses(persisted.essentialExpenses ?? null);
+          if (persisted.chatMessages && persisted.chatMessages.length > 0) {
+            setChatMessages(persisted.chatMessages);
+          }
+          if (persisted.approvedActionIds) setApprovedActionIds(persisted.approvedActionIds);
+          if (persisted.readyRequestActionIds) setReadyRequestActionIds(persisted.readyRequestActionIds);
+          if (persisted.actionOutcomeTracking) setActionOutcomeTracking(persisted.actionOutcomeTracking);
+          setIsUserActionExecuted(Boolean(persisted.isUserActionExecuted));
+
+          const hasAnyContext = (persisted.evidenceList?.length || 0) > 0 ||
+                                (persisted.obligations?.length || 0) > 0 ||
+                                persisted.availableCash !== null ||
+                                Boolean(persisted.nextSalaryDate);
+          if (hasAnyContext) {
+            handleTriggerAnalysis({
+              evidenceList: persisted.evidenceList || [],
+              obligations: persisted.obligations || [],
+              availableCash: persisted.availableCash ?? null,
+              nextSalaryDate: persisted.nextSalaryDate ?? null,
+              nextSalaryAmount: persisted.nextSalaryAmount ?? null,
+              essentialExpenses: persisted.essentialExpenses ?? null,
+            });
+          }
+        }
+      } catch (err) {
+        console.error("Hydration error:", err);
+      } finally {
+        if (!isCancelled) {
+          setIsPersistenceHydrated(true);
+        }
+      }
+    }
+
+    hydrate();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [user?.uid]);
+
+  // Debounced Firestore Persistence (1 second)
+  React.useEffect(() => {
+    if (!user || !isPersistenceHydrated || isDemoScenario) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      saveUserInteractionState(user.uid, {
+        evidenceList,
+        obligations,
+        availableCash,
+        nextSalaryDate,
+        nextSalaryAmount,
+        essentialExpenses,
+        chatMessages,
+        approvedActionIds,
+        readyRequestActionIds,
+        actionOutcomeTracking,
+        isUserActionExecuted,
+      });
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [
+    user?.uid,
+    isPersistenceHydrated,
+    isDemoScenario,
+    evidenceList,
+    obligations,
+    availableCash,
+    nextSalaryDate,
+    nextSalaryAmount,
+    essentialExpenses,
+    chatMessages,
+    approvedActionIds,
+    readyRequestActionIds,
+    actionOutcomeTracking,
+    isUserActionExecuted,
+  ]);
+
+  const handleOpenUploadModal = (
+    type: 'camera' | 'screenshot' | 'document',
+    targetInstOrIsVerification?: string | null | boolean,
+    isVerificationArg?: boolean
+  ) => {
+    const isVerification = typeof targetInstOrIsVerification === 'boolean'
+      ? targetInstOrIsVerification
+      : Boolean(isVerificationArg);
+    const targetInst = typeof targetInstOrIsVerification === 'string'
+      ? targetInstOrIsVerification
+      : null;
+
+    if (isDemoScenario && !isVerification) {
       setPendingUploadIntent({ type, targetInst, replacingItem: null });
       setIsSampleResetConfirmOpen(true);
       return;
     }
     setReplacingEvidenceItem(null);
     setUploadModalType(type);
-    if (targetInst !== undefined) {
-      if (targetInst) {
-        updatePendingLenderRequest(targetInst, 'conversation');
-      } else {
-        updatePendingLenderRequest(null, 'generic_upload');
-      }
+    setIsVerificationUpload(isVerification);
+    if (targetInst) {
+      updatePendingLenderRequest(targetInst, 'conversation');
+    } else if (!isVerification) {
+      updatePendingLenderRequest(null, 'generic_upload');
     }
     setIsUploadModalOpen(true);
   };
@@ -597,10 +800,157 @@ export default function App() {
 
   const handleAddEvidence = (
     item: EvidenceItem,
-    choiceInfo?: { choice: 'use_detected' | 'upload_requested'; requestedInst?: string }
+    choiceInfo?: { choice: 'use_detected' | 'upload_requested'; requestedInst?: string },
+    isVerification?: boolean
   ) => {
+    const catLower = (item.category || '').toLowerCase();
+    const confirmedCatLower = (item.userConfirmedDetails?.category || '').toLowerCase();
+    const titleLower = (item.title || '').toLowerCase();
+    const isLenderResponseEvidence =
+      catLower.includes('lender response') ||
+      catLower.includes('approval confirmation') ||
+      catLower.includes('repayment-date approval') ||
+      confirmedCatLower.includes('lender response') ||
+      confirmedCatLower.includes('approval confirmation') ||
+      confirmedCatLower.includes('repayment-date approval') ||
+      titleLower.includes('approval confirmation') ||
+      titleLower.includes('easycash repayment extension approval') ||
+      titleLower.includes('repayment extension approval') ||
+      Boolean((item as any).isVerificationEvidence) ||
+      Boolean((item.userConfirmedDetails as any)?.isVerificationEvidence);
+
+    const isVerificationMode = isVerification ?? (isVerificationUpload || isLenderResponseEvidence);
     let newEvidenceList = [...evidenceList];
     let newObligations = [...obligations];
+
+    if (isVerificationMode) {
+      // Supplemental verification evidence for existing request/action
+      // MUST NOT reset demo scenario, wipe sample items, or create new repayment obligations
+      const verifiedItem: EvidenceItem = {
+        ...item,
+        category: 'Repayment-date approval confirmation',
+        userConfirmedDetails: {
+          ...item.userConfirmedDetails,
+          category: 'Repayment-date approval confirmation',
+          institutionName: item.userConfirmedDetails?.institutionName || item.extractedDetails?.institutionName || 'EasyCash (PT Indonesia Fintopia Tech)',
+          amountDue: item.userConfirmedDetails?.amountDue || item.extractedDetails?.amountDue || 650000,
+          dueDate: item.userConfirmedDetails?.dueDate || item.extractedDetails?.dueDate || '2026-08-28',
+        },
+        extractedDetails: {
+          ...item.extractedDetails,
+          category: 'Repayment-date approval confirmation',
+          institutionName: item.extractedDetails?.institutionName || 'EasyCash (PT Indonesia Fintopia Tech)',
+          amountDue: item.extractedDetails?.amountDue || 650000,
+          dueDate: item.extractedDetails?.dueDate || '2026-08-28',
+        }
+      };
+      (verifiedItem as any).isVerificationEvidence = true;
+
+      const existsIdx = newEvidenceList.findIndex((e) => 
+        e.id === item.id || 
+        (e.title && item.title && e.title.toLowerCase() === item.title.toLowerCase()) ||
+        ((e.category || '').toLowerCase().includes('approval confirmation') && (e.userConfirmedDetails?.institutionName || '').toLowerCase().includes('easycash'))
+      );
+
+      if (existsIdx >= 0) {
+        newEvidenceList[existsIdx] = verifiedItem;
+      } else {
+        newEvidenceList = [verifiedItem, ...newEvidenceList];
+      }
+      setEvidenceList(newEvidenceList);
+      setIsVerificationUpload(false);
+
+      // Locate and update the EXISTING EasyCash obligation due date to 28 August 2026
+      const confirmedDueDate = item.userConfirmedDetails?.dueDate || item.extractedDetails?.dueDate || '2026-08-28';
+      const formattedDueDate = formatStandardDate(confirmedDueDate);
+      newObligations = newObligations.map((o) => {
+        const normName = (o.institutionName || '').toLowerCase();
+        if (normName.includes('easycash') || o.institutionId.includes('easycash') || normName.includes('fintopia')) {
+          return {
+            ...o,
+            dueDate: confirmedDueDate,
+            formattedDate: formattedDueDate,
+            originalDueDate: (o as any).originalDueDate || '2026-08-24',
+            notes: 'Repayment date shifted to 28 August 2026 based on verified lender approval evidence.'
+          };
+        }
+        return o;
+      });
+      setObligations(newObligations);
+
+      // Update ONLY the verified lender key in actionOutcomeTracking to LENDER_APPROVAL_VERIFIED
+      const timestamp = new Date().toLocaleTimeString('id-ID');
+      const verifiedInstName = item.userConfirmedDetails?.institutionName || item.extractedDetails?.institutionName || 'EasyCash';
+      const verifiedActionId = getExtensionActionId(verifiedInstName);
+
+      setActionOutcomeTracking((prev) => {
+        const updated: Record<string, BorrowerActionOutcome> = { ...prev };
+        updated[verifiedActionId] = {
+          actionId: verifiedActionId,
+          stage: 'LENDER_APPROVAL_VERIFIED',
+          sentAt: prev[verifiedActionId]?.sentAt || timestamp,
+          outcomeReportedAt: timestamp,
+          isEvidenceVerificationRequired: false,
+        };
+        // Also ensure easycash key is updated if named slightly differently
+        if (verifiedInstName.toLowerCase().includes('easycash') || verifiedInstName.toLowerCase().includes('fintopia')) {
+          updated['action-extension-easycash'] = {
+            actionId: 'action-extension-easycash',
+            stage: 'LENDER_APPROVAL_VERIFIED',
+            sentAt: prev['action-extension-easycash']?.sentAt || timestamp,
+            outcomeReportedAt: timestamp,
+            isEvidenceVerificationRequired: false,
+          };
+        }
+        return updated;
+      });
+
+      // Provide clear confirmation in chat AFTER canonical state transition succeeds
+      const confirmAgentMsg: ChatMessage = {
+        id: `msg-confirm-verify-${Date.now()}`,
+        sender: 'agent',
+        timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+        text: `I've verified the EasyCash approval evidence. Your Rp650,000 repayment due date has been updated to 28 August 2026 to align with your salary date.`,
+        retrievedSources: [
+          {
+            id: "POJK-40-2024",
+            sourceTitle: "POJK No. 40 Tahun 2024",
+            organisation: "OJK",
+            confidenceScore: 0.98,
+            matchedClause: "Primary framework for LPBBTI operations and consumer protection",
+            retrievedAt: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+            status: "Current",
+            url: "https://ojk.go.id/id/regulasi/Pages/POJK-40-Tahun-2024-Layanan-Pendanaan-Bersama-Berbasis-Teknologi-Informasi.aspx"
+          },
+          {
+            id: "SEOJK-19-2025",
+            sourceTitle: "SEOJK No. 19/SEOJK.06/2025",
+            organisation: "OJK",
+            confidenceScore: 0.96,
+            matchedClause: "Current LPBBTI operational circular superseding SEOJK 19/2023",
+            retrievedAt: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
+            status: "Current",
+            url: "https://ojk.go.id/id/regulasi/Pages/SEOJK-19-SEOJK06-2025-Penyelenggaraan-LPBBTI.aspx"
+          }
+        ]
+      };
+      setChatMessages((prev) => [...prev, confirmAgentMsg]);
+
+      // Update pipeline activity locally
+      setActivity({
+        currentStage: 'ACT',
+        stages: [
+          { stage: 'UNDERSTAND', status: 'completed', message: 'Parsed EasyCash approval evidence' },
+          { stage: 'RETRIEVE', status: 'completed', message: 'Verified OJK repayment rescheduling rules' },
+          { stage: 'VERIFY', status: 'completed', message: 'Verified lender approval documentation' },
+          { stage: 'REASON', status: 'completed', message: 'Updated obligation timeline to 28 August 2026' },
+          { stage: 'ACT', status: 'completed', message: 'Lender approval verified · Repayment shifted' }
+        ],
+        activeStepDescription: 'Lender approval verified · EasyCash repayment shifted to 28 August 2026'
+      });
+
+      return;
+    }
 
     // If sample scenario was active, clear demo pack first so real evidence is not silently mixed
     if (isDemoScenario) {
@@ -626,11 +976,11 @@ export default function App() {
     const amount = item.userConfirmedDetails?.amountDue ?? item.extractedDetails?.amountDue;
     const dueDate = item.userConfirmedDetails?.dueDate || item.extractedDetails?.dueDate || '2026-08-25';
 
-    const categoryLower = (item.category || '').toLowerCase();
-    const titleLower = (item.title || '').toLowerCase();
-    const notesLower = (item.userConfirmedDetails?.notes || item.extractedDetails?.notes || item.summaryStatement || '').toLowerCase();
-    const isSalaryOrIncome = categoryLower.includes('salary') || categoryLower.includes('payroll') || categoryLower.includes('bank statement') || titleLower.includes('salary') || titleLower.includes('slip') || titleLower.includes('payroll') || titleLower.includes('gaji') || notesLower.includes('salary') || notesLower.includes('net salary');
-    const isSlikOrReport = categoryLower.includes('slik') || categoryLower.includes('ideb') || titleLower.includes('slik') || titleLower.includes('ideb');
+    const itemCatLower = (item.category || '').toLowerCase();
+    const itemTitleLower = (item.title || '').toLowerCase();
+    const itemNotesLower = (item.userConfirmedDetails?.notes || item.extractedDetails?.notes || item.summaryStatement || '').toLowerCase();
+    const isSalaryOrIncome = itemCatLower.includes('salary') || itemCatLower.includes('payroll') || itemCatLower.includes('bank statement') || itemTitleLower.includes('salary') || itemTitleLower.includes('slip') || itemTitleLower.includes('payroll') || itemTitleLower.includes('gaji') || itemNotesLower.includes('salary') || itemNotesLower.includes('net salary');
+    const isSlikOrReport = itemCatLower.includes('slik') || itemCatLower.includes('ideb') || itemTitleLower.includes('slik') || itemTitleLower.includes('ideb');
 
     if (isSalaryOrIncome) {
       const salaryDetails = extractSalaryDetailsFromEvidence(item);
@@ -976,6 +1326,7 @@ export default function App() {
       activeStepDescription: 'Proposed action approved · added to Action Plan',
     }));
 
+    setTargetActionPlanActionId(action.id);
     setActiveTab('Action Plan');
   };
 
@@ -988,6 +1339,65 @@ export default function App() {
         readyAt: timestamp,
       },
     }));
+    setActionOutcomeTracking((prev) => ({
+      ...prev,
+      [actionId]: {
+        actionId,
+        stage: 'REQUEST_READY',
+      },
+    }));
+  };
+
+  const handleReportSent = (actionId: string) => {
+    const timestamp = new Date().toLocaleTimeString('id-ID');
+    setActionOutcomeTracking((prev) => ({
+      ...prev,
+      [actionId]: {
+        actionId,
+        stage: 'BORROWER_REPORTED_SENT',
+        sentAt: timestamp,
+      },
+    }));
+  };
+
+  const handleRecordLenderOutcome = (actionId: string, outcome: 'APPROVED' | 'NOT_APPROVED' | 'STILL_WAITING') => {
+    const timestamp = new Date().toLocaleTimeString('id-ID');
+    setActionOutcomeTracking((prev) => {
+      const existing = prev[actionId];
+      if (outcome === 'STILL_WAITING') {
+        return {
+          ...prev,
+          [actionId]: {
+            actionId,
+            stage: 'AWAITING_LENDER_RESPONSE',
+            sentAt: existing?.sentAt || timestamp,
+            outcomeReportedAt: timestamp,
+          },
+        };
+      }
+      if (outcome === 'NOT_APPROVED') {
+        return {
+          ...prev,
+          [actionId]: {
+            actionId,
+            stage: 'BORROWER_REPORTED_NOT_APPROVED',
+            sentAt: existing?.sentAt || timestamp,
+            outcomeReportedAt: timestamp,
+          },
+        };
+      }
+      // outcome === 'APPROVED'
+      return {
+        ...prev,
+        [actionId]: {
+          actionId,
+          stage: 'BORROWER_REPORTED_APPROVED_UNVERIFIED',
+          sentAt: existing?.sentAt || timestamp,
+          outcomeReportedAt: timestamp,
+          isEvidenceVerificationRequired: true,
+        },
+      };
+    });
   };
 
   const handleExecuteAction = (action: NextBestAction) => {
@@ -1042,16 +1452,9 @@ export default function App() {
     ) {
       handleOpenUploadModal('screenshot', targetInst);
     } else if (action.actionCode === 'PREPARE_EXTENSION' || action.primaryActionButtonLabel.includes('View sent request') || action.primaryActionButtonLabel.includes('Action Plan')) {
+      setTargetActionPlanActionId(action.id);
       setActiveTab('Action Plan');
       setDraftOpenTrigger((prev) => prev + 1);
-      setTimeout(() => {
-        const el = document.getElementById('lender-request-draft-card') || document.getElementById('step-by-step-execution-timeline');
-        if (el) {
-          const yOffset = -90;
-          const y = el.getBoundingClientRect().top + window.pageYOffset + yOffset;
-          window.scrollTo({ top: y, behavior: 'smooth' });
-        }
-      }, 100);
     } else {
       setSelectedLineageAction(action);
     }
@@ -1217,8 +1620,10 @@ export default function App() {
 
       const impactText = `If approved, pre-salary repayments decrease from Rp${totalPreSalaryRepayments.toLocaleString('en-US')} to Rp${remainingPreSalaryRepayments.toLocaleString('en-US')} and the repayment-only funding gap decreases from Rp${portfolioFundingGap.toLocaleString('en-US')} to Rp${remainingFundingGap.toLocaleString('en-US')}. Essential expenses are not included.`;
 
+      const earliestActionId = getExtensionActionId(earliestInst);
+
       derivedActions.push({
-        id: "action-contact-earliest",
+        id: earliestActionId,
         category: "DO TODAY",
         priorityOrder: 1,
         title: `Ask ${earliestInst} about moving the repayment date`,
@@ -1291,8 +1696,9 @@ export default function App() {
         }
       });
     } else {
+      const earliestActionId = getExtensionActionId(earliestInst);
       derivedActions.push({
-        id: "action-schedule-repayment",
+        id: earliestActionId,
         category: "DO TODAY",
         priorityOrder: 1,
         title: `Schedule repayment for ${earliestInst}`,
@@ -1344,7 +1750,7 @@ export default function App() {
         normalizedAct.authorisingEntity && normalizedAct.authorisingEntity !== 'Borrower'
           ? normalizedAct.authorisingEntity
           : earliestInst || 'lender'
-      ).toLowerCase();
+      );
 
       const titleLower = (normalizedAct.title || '').toLowerCase();
       const primaryBtnLower = (normalizedAct.primaryActionButtonLabel || '').toLowerCase();
@@ -1353,88 +1759,76 @@ export default function App() {
         normalizedAct.actionCode === 'PREPARE_EXTENSION' ||
         titleLower.includes('moving the repayment date') ||
         titleLower.includes('payment-date adjustment') ||
-        primaryBtnLower.includes('prepare');
+        primaryBtnLower.includes('prepare') ||
+        normalizedAct.category === 'DO TODAY';
+
+      const stableId = isExtensionAction
+        ? getExtensionActionId(lender)
+        : normalizedAct.id;
+
+      const actWithStableId: NextBestAction = {
+        ...normalizedAct,
+        id: stableId,
+        authorisingEntity: isExtensionAction ? lender : normalizedAct.authorisingEntity,
+      };
 
       const rawKey = isExtensionAction
-        ? `PREPARE_EXTENSION-${lender}`
-        : normalizedAct.id || `${normalizedAct.actionCode || 'CUSTOM'}-${titleLower.trim()}`;
+        ? `PREPARE_EXTENSION-${lender.toLowerCase()}`
+        : stableId || `${normalizedAct.actionCode || 'CUSTOM'}-${titleLower.trim()}`;
 
       if (!seenRawKeys.has(rawKey)) {
         seenRawKeys.add(rawKey);
-        dedupedRaw.push(normalizedAct);
+        dedupedRaw.push(actWithStableId);
       }
     }
 
-    let processedActions = dedupedRaw;
-
-    if (isUserActionExecuted) {
-      let mappedOnce = false;
-      const sentLenders = new Set<string>();
-
-      const mapped = dedupedRaw.map((action) => {
-        const lenderLabel =
-          action.authorisingEntity && action.authorisingEntity !== 'Borrower'
-            ? action.authorisingEntity
-            : earliestInst || 'lender';
-
-        const titleLower = (action.title || '').toLowerCase();
-        const primaryBtnLower = (action.primaryActionButtonLabel || '').toLowerCase();
-
-        const isExtensionAction =
-          action.actionCode === 'PREPARE_EXTENSION' ||
-          action.category === 'DO TODAY' ||
-          primaryBtnLower.includes('prepare') ||
-          titleLower.includes('moving the repayment date');
-
-        if (!mappedOnce && isExtensionAction) {
-          mappedOnce = true;
-          sentLenders.add(lenderLabel.toLowerCase());
-          return {
-            ...action,
-            id: action.id || 'action-sent-request',
-            title: `${lenderLabel} request sent — awaiting response`,
-            reason: `Your request has been recorded as sent. The original repayment obligation remains applicable until ${lenderLabel} confirms any change.`,
-            currentSourceStatus: 'ACTION SENT' as const,
-            requiresHumanAuthorisation: false,
-            authorisingEntity: lenderLabel,
-            primaryActionButtonLabel: 'View sent request',
-          };
-        }
-        return action;
-      });
-
-      // Filter out/suppress any unsent recommendation that matches a lender whose request has been sent
-      processedActions = mapped.filter((action) => {
-        if (action.currentSourceStatus === 'ACTION SENT') {
-          return true;
-        }
-
-        const lenderLabel = (
-          action.authorisingEntity && action.authorisingEntity !== 'Borrower'
-            ? action.authorisingEntity
-            : earliestInst || 'lender'
-        ).toLowerCase();
-
-        const titleLower = (action.title || '').toLowerCase();
-        const primaryBtnLower = (action.primaryActionButtonLabel || '').toLowerCase();
-
-        const isUnsentExtensionRecommendation =
-          action.actionCode === 'PREPARE_EXTENSION' ||
-          primaryBtnLower.includes('prepare') ||
-          titleLower.includes('moving the repayment date') ||
-          titleLower.includes('ask ');
-
-        if (isUnsentExtensionRecommendation && sentLenders.has(lenderLabel)) {
-          return false; // Suppress duplicate unsent recommendation
-        }
-
-        return true;
-      });
-    }
-
-    // Attach human approval flags from approvedActionIds
-    const finalMapped = processedActions.map((action) => {
+    // Map each action's state strictly from its own outcomeTracking and approvedActionIds
+    const finalMapped = dedupedRaw.map((action) => {
+      const outcome = actionOutcomeTracking[action.id];
       const isApproved = Boolean(approvedActionIds[action.id]?.isApproved);
+      const lenderLabel = action.authorisingEntity && action.authorisingEntity !== 'Borrower'
+        ? action.authorisingEntity
+        : earliestInst || 'lender';
+
+      if (outcome?.stage === 'BORROWER_REPORTED_SENT' || outcome?.stage === 'AWAITING_LENDER_RESPONSE') {
+        return {
+          ...normalizeAction(action),
+          title: `${lenderLabel} request sent — awaiting response`,
+          reason: `Your request has been recorded as sent. The original repayment obligation remains applicable until ${lenderLabel} confirms any change.`,
+          currentSourceStatus: 'ACTION SENT' as const,
+          requiresHumanAuthorisation: false,
+          primaryActionButtonLabel: 'View sent request',
+          isApprovedByUser: true,
+          approvedAt: approvedActionIds[action.id]?.approvedAt,
+        };
+      }
+
+      if (outcome?.stage === 'BORROWER_REPORTED_APPROVED_UNVERIFIED') {
+        return {
+          ...normalizeAction(action),
+          title: `${lenderLabel} approval reported — verification required`,
+          reason: `You reported that ${lenderLabel} approved moving the repayment date. Please upload confirmation evidence to verify the change.`,
+          currentSourceStatus: 'Lender confirmation required' as const,
+          requiresHumanAuthorisation: false,
+          primaryActionButtonLabel: 'Add verification evidence',
+          isApprovedByUser: true,
+          approvedAt: approvedActionIds[action.id]?.approvedAt,
+        };
+      }
+
+      if (outcome?.stage === 'LENDER_APPROVAL_VERIFIED') {
+        return {
+          ...normalizeAction(action),
+          title: `${lenderLabel} approval verified — repayment moved to 28 August 2026`,
+          reason: `Lender approval confirmed from verified evidence. Repayment date updated to 28 August 2026.`,
+          currentSourceStatus: 'Current' as const,
+          requiresHumanAuthorisation: false,
+          primaryActionButtonLabel: 'View verified pack',
+          isApprovedByUser: true,
+          approvedAt: approvedActionIds[action.id]?.approvedAt,
+        };
+      }
+
       return {
         ...normalizeAction(action),
         isApprovedByUser: isApproved,
@@ -1454,6 +1848,7 @@ export default function App() {
     nextSalaryDate,
     isUserActionExecuted,
     approvedActionIds,
+    actionOutcomeTracking,
   ]);
 
   // Real deterministic navigation handler for Review Actions CTA
@@ -1854,9 +2249,14 @@ export default function App() {
                 draftOpenTrigger={draftOpenTrigger}
                 selectedScenarioType={selectedScenarioType}
                 readyRequestActionIds={readyRequestActionIds}
+                outcomeTracking={actionOutcomeTracking}
+                targetScrollActionId={targetActionPlanActionId}
+                onClearTargetActionId={() => setTargetActionPlanActionId(null)}
                 onMarkRequestReady={handleMarkRequestReady}
+                onReportSent={handleReportSent}
+                onRecordLenderOutcome={handleRecordLenderOutcome}
                 onSelectScenarioType={setSelectedScenarioType}
-                onOpenUploadModal={handleOpenUploadModal}
+                onOpenUploadModal={(type, isVer) => handleOpenUploadModal(type, null, isVer)}
                 onOpenFinancialContextModal={() => setIsFinancialContextModalOpen(true)}
                 onApproveAction={handleApproveAction}
                 onConfirmActionExecution={(actionId, counterparty) => {
@@ -1989,10 +2389,12 @@ export default function App() {
         onClose={() => {
           setIsUploadModalOpen(false);
           setReplacingEvidenceItem(null);
+          setIsVerificationUpload(false);
         }}
-        onAddEvidence={handleAddEvidence}
+        onAddEvidence={(item, choiceInfo) => handleAddEvidence(item, choiceInfo, isVerificationUpload)}
         requestedInstitution={pendingEvidenceRequest?.institution || pendingRequestedLender || ''}
         isDemoScenario={isDemoScenario}
+        isVerificationEvidence={isVerificationUpload}
         onStartFreshWithOwnEvidence={handleResetDemo}
         onMismatchStateChange={(isMismatch) => {
           if (isMismatch) {

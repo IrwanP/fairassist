@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { EvidenceItem } from '../types';
+import { authFetch } from '../utils/api';
 import { 
   X, 
   Camera, 
@@ -28,6 +29,7 @@ interface EvidenceUploadModalProps {
   requestedInstitution?: string;
   onMismatchStateChange?: (isMismatch: boolean) => void;
   isDemoScenario?: boolean;
+  isVerificationEvidence?: boolean;
   onStartFreshWithOwnEvidence?: () => void;
 }
 
@@ -82,6 +84,7 @@ export const EvidenceUploadModal: React.FC<EvidenceUploadModalProps> = ({
   requestedInstitution = '',
   onMismatchStateChange,
   isDemoScenario = false,
+  isVerificationEvidence = false,
   onStartFreshWithOwnEvidence,
 }) => {
   const [activeType, setActiveType] = useState<'camera' | 'screenshot' | 'document'>(initialType);
@@ -390,7 +393,7 @@ export const EvidenceUploadModal: React.FC<EvidenceUploadModalProps> = ({
     const longTimer = setTimeout(() => setIsLongProcessing(true), 8000);
 
     try {
-      const response = await fetch('/api/analyze-evidence', {
+      const response = await authFetch('/api/analyze-evidence', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -426,50 +429,61 @@ export const EvidenceUploadModal: React.FC<EvidenceUploadModalProps> = ({
       setTimeout(() => {
         setGeminiData(data);
         // Initialize user confirmed fields strictly from returned data
-        setConfirmedTitle(data.title || `${data.institution || 'Evidence'} ${data.product || ''}`.trim());
-        setConfirmedCategory(data.category || 'Bank repayment notification');
-        setConfirmedInstitution(data.institution || '');
-        setConfirmedProduct(data.product || '');
-
-        let extractedSalaryAmt = data.amountDue !== null && data.amountDue !== undefined ? String(data.amountDue) : '';
-        let extractedSalaryDate = data.dueDate || '';
-
         const titleLower = (data.title || '').toLowerCase();
         const catLower = (data.category || '').toLowerCase();
         const prodLower = (data.product || '').toLowerCase();
         const notesText = data.extractedNotes || data.summaryStatement || '';
         const notesLower = notesText.toLowerCase();
 
-        const isSalaryDoc = catLower.includes('salary') || catLower.includes('payroll') || titleLower.includes('salary') || titleLower.includes('slip') || titleLower.includes('payroll') || titleLower.includes('gaji') || titleLower.includes('nusantara') || prodLower.includes('salary') || prodLower.includes('payroll') || notesLower.includes('net salary') || notesLower.includes('salary');
+        if (isVerificationEvidence) {
+          setConfirmedTitle(data.title || 'EasyCash repayment extension approval');
+          setConfirmedCategory('Repayment-date approval confirmation');
+          setConfirmedInstitution(data.institution || 'EasyCash (PT Indonesia Fintopia Tech)');
+          setConfirmedProduct(data.product || 'Loan Facility (Repayment Extension)');
+          setConfirmedAmount(data.amountDue !== null && data.amountDue !== undefined ? String(data.amountDue) : '650000');
+          setConfirmedDueDate(data.dueDate || '2026-08-28');
+          setConfirmedAccount(data.accountOrFacility || '');
+          setConfirmedNotes(notesText || 'EasyCash approved moving Rp650,000 repayment from 24 August 2026 to 28 August 2026.');
+        } else {
+          setConfirmedTitle(data.title || `${data.institution || 'Evidence'} ${data.product || ''}`.trim());
+          setConfirmedCategory(data.category || 'Bank repayment notification');
+          setConfirmedInstitution(data.institution || '');
+          setConfirmedProduct(data.product || '');
 
-        if (isSalaryDoc) {
-          const netMatch = notesText.match(/(?:Net\s+(?:Salary|Pay|Gaji)|Take\s*Home\s*Pay|Gaji\s*Bersih)[:\s]*Rp?\s*([\d\.,]+)/i);
-          if (netMatch && netMatch[1]) {
-            const cleaned = netMatch[1].replace(/[^\d]/g, '');
-            if (cleaned.length >= 6) extractedSalaryAmt = cleaned;
-          } else if (extractedSalaryAmt === '9000000' || !extractedSalaryAmt) {
-            const matchAmt = notesText.match(/(?:Net\s+Salary|Salary|Income|Payment|Gaji)[:\s]*Rp?\s*([\d\.,]+)/i) || notesText.match(/Rp?\s*([\d\.,]{6,})/i);
-            if (matchAmt && matchAmt[1]) {
-              const cleaned = matchAmt[1].replace(/[^\d]/g, '');
+          let extractedSalaryAmt = data.amountDue !== null && data.amountDue !== undefined ? String(data.amountDue) : '';
+          let extractedSalaryDate = data.dueDate || '';
+
+          const isSalaryDoc = catLower.includes('salary') || catLower.includes('payroll') || titleLower.includes('salary') || titleLower.includes('slip') || titleLower.includes('payroll') || titleLower.includes('gaji') || titleLower.includes('nusantara') || prodLower.includes('salary') || prodLower.includes('payroll') || notesLower.includes('net salary') || notesLower.includes('salary');
+
+          if (isSalaryDoc) {
+            const netMatch = notesText.match(/(?:Net\s+(?:Salary|Pay|Gaji)|Take\s*Home\s*Pay|Gaji\s*Bersih)[:\s]*Rp?\s*([\d\.,]+)/i);
+            if (netMatch && netMatch[1]) {
+              const cleaned = netMatch[1].replace(/[^\d]/g, '');
               if (cleaned.length >= 6) extractedSalaryAmt = cleaned;
+            } else if (extractedSalaryAmt === '9000000' || !extractedSalaryAmt) {
+              const matchAmt = notesText.match(/(?:Net\s+Salary|Salary|Income|Payment|Gaji)[:\s]*Rp?\s*([\d\.,]+)/i) || notesText.match(/Rp?\s*([\d\.,]{6,})/i);
+              if (matchAmt && matchAmt[1]) {
+                const cleaned = matchAmt[1].replace(/[^\d]/g, '');
+                if (cleaned.length >= 6) extractedSalaryAmt = cleaned;
+              }
+            }
+            if (!extractedSalaryDate) {
+              const matchDate = notesText.match(/(?:Payment date|Pay date|Date|Gaji)[:\s]*([0-9]{1,2}\s+[A-Za-z]+\s+[0-9]{4}|[0-9]{4}-[0-9]{2}-[0-9]{2})/i) || notesText.match(/([0-9]{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+[0-9]{4})/i);
+              if (matchDate && matchDate[1]) {
+                extractedSalaryDate = matchDate[1];
+              }
+            }
+            if (titleLower.includes('nusantara') || notesLower.includes('nusantara') || titleLower.includes('salary slip')) {
+              if (!extractedSalaryAmt || extractedSalaryAmt === '9000000') extractedSalaryAmt = '8500000';
+              if (!extractedSalaryDate) extractedSalaryDate = '28 Aug 2026';
             }
           }
-          if (!extractedSalaryDate) {
-            const matchDate = notesText.match(/(?:Payment date|Pay date|Date|Gaji)[:\s]*([0-9]{1,2}\s+[A-Za-z]+\s+[0-9]{4}|[0-9]{4}-[0-9]{2}-[0-9]{2})/i) || notesText.match(/([0-9]{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+[0-9]{4})/i);
-            if (matchDate && matchDate[1]) {
-              extractedSalaryDate = matchDate[1];
-            }
-          }
-          if (titleLower.includes('nusantara') || notesLower.includes('nusantara') || titleLower.includes('salary slip')) {
-            if (!extractedSalaryAmt || extractedSalaryAmt === '9000000') extractedSalaryAmt = '8500000';
-            if (!extractedSalaryDate) extractedSalaryDate = '28 Aug 2026';
-          }
-        }
 
-        setConfirmedAmount(extractedSalaryAmt);
-        setConfirmedDueDate(extractedSalaryDate);
-        setConfirmedAccount(data.accountOrFacility || '');
-        setConfirmedNotes(data.extractedNotes || data.summaryStatement || '');
+          setConfirmedAmount(extractedSalaryAmt);
+          setConfirmedDueDate(extractedSalaryDate);
+          setConfirmedAccount(data.accountOrFacility || '');
+          setConfirmedNotes(notesText);
+        }
 
         const reqCanonical = getCanonicalInstitution(requestedInstitution || '');
         const detCanonical = getCanonicalInstitution(data.institution || '');
@@ -556,6 +570,8 @@ export const EvidenceUploadModal: React.FC<EvidenceUploadModalProps> = ({
     'Bank statement',
     'iDeb SLIK – Debitur Perseorangan',
     'Repayment or borrowing offer',
+    'Repayment-date approval confirmation',
+    'Lender response evidence',
     'Other financial evidence',
   ];
 
@@ -568,7 +584,11 @@ export const EvidenceUploadModal: React.FC<EvidenceUploadModalProps> = ({
         {/* Modal Top Header */}
         <div className="flex items-center justify-between border-b border-stone-100 pb-3">
           <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-100">
+            <div className={`p-2 rounded-xl border ${
+              isVerificationEvidence 
+                ? 'bg-amber-50 text-amber-800 border-amber-200' 
+                : 'bg-indigo-50 text-indigo-700 border border-indigo-100'
+            }`}>
               {activeType === 'camera' && <Camera className="w-5 h-5" />}
               {activeType === 'screenshot' && <ImageIcon className="w-5 h-5" />}
               {activeType === 'document' && <FileText className="w-5 h-5" />}
@@ -576,12 +596,19 @@ export const EvidenceUploadModal: React.FC<EvidenceUploadModalProps> = ({
             <div>
               <h3 className="text-base font-bold text-stone-900 tracking-tight">
                 {replacingItem ? `Replace File: ${replacingItem.title}` : (
-                  activeType === 'camera' ? 'Take Financial Evidence Photo' :
-                  activeType === 'screenshot' ? 'Upload Repayment Screenshot' : 'Upload Financial Document'
+                  isVerificationEvidence ? (
+                    activeType === 'camera' ? 'Capture Lender Confirmation Photo' :
+                    activeType === 'screenshot' ? 'Upload Lender Response Screenshot' : 'Upload Lender Confirmation Document'
+                  ) : (
+                    activeType === 'camera' ? 'Take Financial Evidence Photo' :
+                    activeType === 'screenshot' ? 'Upload Repayment Screenshot' : 'Upload Financial Document'
+                  )
                 )}
               </h3>
               <p className="text-xs text-stone-500">
-                Gemini multimodal AI will parse and extract relevant details
+                {isVerificationEvidence
+                  ? 'Add evidence of lender agreement (e.g. EasyCash chat, SMS, or app confirmation)'
+                  : 'Gemini multimodal AI will parse and extract relevant details'}
               </p>
             </div>
           </div>
@@ -598,25 +625,36 @@ export const EvidenceUploadModal: React.FC<EvidenceUploadModalProps> = ({
 
         {/* Sample scenario notification banner */}
         {isDemoScenario && (
-          <div className="flex items-center justify-between p-2.5 bg-indigo-50/80 border border-indigo-200/90 rounded-xl text-xs">
-            <div className="flex items-center gap-2 text-indigo-900 min-w-0 mr-2">
-              <Sparkles className="w-4 h-4 text-indigo-600 shrink-0" />
-              <span className="text-[11px] font-medium leading-tight">
-                Sample scenario active · avoid mixing real evidence with sample data
-              </span>
+          isVerificationEvidence ? (
+            <div className="flex items-center justify-between p-2.5 bg-amber-50/90 border border-amber-200/90 rounded-xl text-xs">
+              <div className="flex items-center gap-2 text-amber-900 min-w-0">
+                <ShieldCheck className="w-4 h-4 text-amber-700 shrink-0" />
+                <span className="text-[11px] font-medium leading-tight">
+                  Lender response verification evidence · Supplemental evidence for EasyCash repayment extension
+                </span>
+              </div>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                if (onStartFreshWithOwnEvidence) {
-                  onStartFreshWithOwnEvidence();
-                }
-              }}
-              className="text-[10px] font-semibold text-indigo-900 hover:text-indigo-950 bg-indigo-100 hover:bg-indigo-200 border border-indigo-300 px-2.5 py-1 rounded-lg cursor-pointer transition-colors whitespace-nowrap shrink-0"
-            >
-              Start fresh with your own evidence
-            </button>
-          </div>
+          ) : (
+            <div className="flex items-center justify-between p-2.5 bg-indigo-50/80 border border-indigo-200/90 rounded-xl text-xs">
+              <div className="flex items-center gap-2 text-indigo-900 min-w-0 mr-2">
+                <Sparkles className="w-4 h-4 text-indigo-600 shrink-0" />
+                <span className="text-[11px] font-medium leading-tight">
+                  Sample scenario active · avoid mixing real evidence with sample data
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onStartFreshWithOwnEvidence) {
+                    onStartFreshWithOwnEvidence();
+                  }
+                }}
+                className="text-[10px] font-semibold text-indigo-900 hover:text-indigo-950 bg-indigo-100 hover:bg-indigo-200 border border-indigo-300 px-2.5 py-1 rounded-lg cursor-pointer transition-colors whitespace-nowrap shrink-0"
+              >
+                Start fresh with your own evidence
+              </button>
+            </div>
+          )
         )}
 
         {/* Workflow Switch Tabs */}
