@@ -595,9 +595,13 @@ FairAssist is deployed on **Google Cloud Run** in `asia-southeast1`.
 The production service utilizes:
 
 - **Managed Container Runtime**: Scalable, containerized Node.js backend serving both Vite static client assets and Express API endpoints.
-- **Google Cloud Secret Manager**: Production `GEMINI_API_KEY` is mounted securely as a container environment variable at runtime.
+- **Google Cloud Secret Manager**: Production runtime credentials are securely provided to the application through Secret Manager.
 - **Challenge Label**: Verified and tagged with `dev-tutorial=cloud-run-ai-challenge`.
 - **Server-Side Security**: All Gemini API calls, Google ADK orchestration, RAG retrieval, and token verification occur strictly server-side.
+
+### Production Verification
+
+FairAssist’s own-evidence multimodal workflow has been validated end-to-end on the live Cloud Run deployment. Gemini successfully extracted institution, repayment amount, due date, evidence category, and supporting details from both BCA and Easycash repayment screenshots, while keeping the borrower in control of confirmation before the information enters their financial context. The verified production workflow demonstrates evidence-grounded multimodal analysis operating successfully within FairAssist’s secure Cloud Run architecture.
 
 ---
 
