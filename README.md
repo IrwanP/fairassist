@@ -605,6 +605,14 @@ FairAssist’s own-evidence multimodal workflow has been validated end-to-end on
 
 ---
 
+## Demo
+
+The FairAssist end-to-end demo shows the complete journey from authenticated conversational guidance and Gemini multimodal evidence analysis to grounded reasoning, scenario simulation, and human-controlled action.
+
+▶️ **[Watch the FairAssist end-to-end demo](https://youtu.be/A108zglKsI8)**
+
+---
+
 ## Current Capabilities
 
 The FairAssist application demonstrates the following production capabilities:
