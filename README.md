@@ -1,773 +1,602 @@
 # FairAssist
 
-**AI-powered, evidence-grounded financial decision support for Indonesian consumers.**
+**Evidence-grounded Conversational AI for responsible repayment decisions in Indonesia.**
 
-FairAssist helps consumers understand repayment obligations, financial timing, applicable regulatory information, and possible next steps before making consequential financial decisions.
+FairAssist is a customer-facing AI decision-support agent that helps borrowers understand repayment obligations, financial timing, relevant regulatory context, and responsible next steps without taking the final decision away from the borrower.
 
-Rather than providing generic financial advice, FairAssist combines **confirmed financial evidence, user context, trusted regulatory and lender-policy information, and AI-assisted reasoning** to answer three practical questions:
+It combines **confirmed financial evidence, conversational reasoning, deterministic financial calculations, provider-aware regulatory grounding, and explicit human control** to answer three practical questions:
 
 > **What needs my attention?**  
 > **What information is still missing?**  
-> **What options can I responsibly explore next?**
+> **What can I responsibly explore next?**
 
-FairAssist is built upon a verified production agentic technology foundation combining:
+**Technology:** Google Agent Development Kit (ADK) · Gemini · Retrieval-Augmented Generation (RAG) · Firebase Authentication · Cloud Firestore · Google Cloud Secret Manager · Google Cloud Run
 
-**Google Agent Development Kit (ADK) · Retrieval-Augmented Generation (RAG) · Gemini · Firebase Auth & Firestore · Google Cloud Secret Manager · Google Cloud Run**
+> **FairAssist is decision support, not autonomous financial action.** It does not execute payments, contact lenders automatically, approve repayment arrangements, guarantee restructuring, or replace professional financial or legal advice.
 
-> **FairAssist is a decision-support system.** It does not execute payments, approve repayment arrangements, guarantee restructuring or extensions, or replace professional financial or legal advice.
+## Live Project
 
----
-
-## At a Glance
-
-**Problem**  
-Consumers can face multiple repayment deadlines, fragmented financial evidence, limited cash before payday, and uncertainty about which obligation requires attention first.
-
-**Approach**  
-FairAssist converts confirmed financial evidence into structured decision context, connects that context with relevant trusted information, and helps the user explore responsible next steps.
-
-**Technology foundation**  
-**Google ADK · RAG · Gemini · Firebase Auth & Firestore · Google Cloud Secret Manager · Google Cloud Run**
-
-**Key capabilities**  
-Firebase Google Sign-In · User-isolated Firestore persistence · Multimodal evidence analysis · Context sufficiency · Trusted regulatory retrieval · Cash-flow reasoning · Action simulation · Human-in-the-loop control
+- **Production:** https://fairassist-908679630296.asia-southeast1.run.app/
+- **Demo video:** https://youtu.be/xEw1OSPvJv8
+- **Repository:** https://github.com/IrwanP/fairassist
 
 ---
 
-## Technology Foundation
+## 1. End-to-End Experience
 
-FairAssist implements an integrated full-stack architecture pairing a reactive client interface with a secure server-side agentic runtime.
+FairAssist brings the complete borrower-support workflow into one conversational workspace:
 
-The application implements **Google ADK multi-agent orchestration, server-side Gemini integration, multimodal evidence analysis, runtime RAG grounding, user-isolated Firestore persistence, Secret Manager credential handling, cash-flow reasoning, action simulation, and human-in-the-loop decision boundaries**.
+1. authenticate securely;
+2. add or capture repayment evidence;
+3. let Gemini extract structured details;
+4. confirm the evidence before it becomes financial context;
+5. ask conversational questions about repayment priorities;
+6. retrieve and verify applicable regulatory/provider information;
+7. reason over confirmed obligations and timing;
+8. simulate possible actions;
+9. keep every external action under borrower control.
+
+![FairAssist end-to-end overview](docs/screenshots/01_end_to_end_overview.png)
+
+---
+
+## 2. Problem
+
+Repayment stress is often not only an income problem. It can also be a **timing, evidence, and decision-context problem**.
+
+A borrower may have:
+
+- several repayment dates close together;
+- limited cash before payday;
+- evidence spread across screenshots, apps, messages, and documents;
+- uncertainty about which obligation needs attention first;
+- incomplete understanding of lender-specific or regulatory information;
+- no clear distinction between **deadline priority** and **actual cash allocation**.
+
+Generic chat advice is not enough for this situation. The assistant needs to know which facts are confirmed, what is still missing, which rules actually apply, and where the AI must stop.
+
+FairAssist converts those fragmented signals into a structured and explainable decision context.
+
+---
+
+## 3. Why Conversational AI
+
+FairAssist is designed first as a **Conversational AI experience**, not as a static compliance dashboard.
+
+A borrower can ask:
+
+- *Which repayment should I prioritise first?*
+- *Why should I prioritise Easycash first?*
+- *What information do you still need from me?*
+- *What current rules apply to this repayment?*
+- *Is this provider currently verified?*
+- *What happens if I cannot cover all repayments before payday?*
+
+The conversation retains the financial context built from confirmed evidence, so follow-up questions can be answered without forcing the user to restate the situation.
+
+The key design principle is:
+
+> **AI can support the decision. The borrower should still own it.**
+
+---
+
+## 4. Ideathon Challenge Alignment
+
+FairAssist preserves the **Secure Personal Gemini Journal** security foundation while extending it into an original customer-facing financial decision-support use case.
+
+| Explainer / Challenge Area | FairAssist Evidence |
+|---|---|
+| **Gemini** | Multi-turn conversational reasoning and multimodal financial-evidence extraction |
+| **Firebase Authentication** | Google Sign-In is the authoritative identity boundary |
+| **Cloud Firestore** | User-owned state is persisted under owner-isolated paths |
+| **Secret Manager** | Production `GEMINI_API_KEY` is injected from Google Cloud Secret Manager |
+| **Cloud Run** | Production service runs in `asia-southeast1` |
+| **Required challenge label** | `dev-tutorial=cloud-run-ai-challenge` |
+| **Innovation** | Evidence-grounded repayment reasoning, multimodal evidence, provider-aware grounding, unknown-provider fail-closed handling, Action Simulator, HITL |
+| **Architecture Quality** | ADK orchestration, server-side Gemini, deterministic financial boundary, isolated persistence, explicit source provenance |
+| **UX** | Conversational follow-ups, guided sample, evidence review, visible AI pipeline, suggested questions, action simulation |
+| **Security Compliance** | Authenticated ownership, Firestore rules, Secret Manager, no plaintext production Gemini key, fail-closed provider/regulatory claims |
+
+FairAssist therefore uses the secure challenge foundation **as a platform**, not as the final product itself.
+
+---
+
+## 5. Technology Foundation
 
 | Layer | Technology | Role |
 |---|---|---|
-| **Agent Orchestration** | **Google Agent Development Kit (ADK)** | Production multi-agent orchestration coordinating root reasoning, multimodal extraction, financial calculation, and regulatory retrieval |
-| **Generative AI** | **Gemini** | Multimodal evidence extraction, structured schema generation, financial timing reasoning, and conversational intelligence |
-| **Grounding** | **Retrieval-Augmented Generation (RAG)** | Runtime grounding layer retrieving verified OJK regulations and lender-policy documentation with visible source provenance |
-| **Authentication** | **Firebase Authentication** | Authoritative user identity boundary using Google Sign-In and server-side Bearer ID token verification |
-| **Persistence** | **Cloud Firestore** | Dedicated named database (`ai-studio-fairassist-a8a2b6ad-7b34-4311-94e3-b2b3e8cd1f86`) with owner-isolated security rules |
-| **Secret Management** | **Google Cloud Secret Manager** | Secure runtime secret injection to Cloud Run without hardcoded credentials in code or plaintext container settings |
-| **Deployment & Runtime** | **Google Cloud Run** | Production managed container runtime with required challenge label (`dev-tutorial=cloud-run-ai-challenge`) |
-| **Frontend UI** | **React 18 + TypeScript + Vite** | Responsive customer-facing interface styled with Tailwind CSS |
-| **API Layer** | **Express + TypeScript** | Authenticated backend proxy verifying user tokens and isolating AI execution |
-| **Source Validation** | **Server-side trusted verification** | Restricts external retrieval to allowlisted domains and tracks verified source freshness |
-
-FairAssist is designed as an **authenticated, user-isolated, agentic, grounded, and deployable customer-facing AI decision-support system**.
+| **Agent orchestration** | **Google Agent Development Kit (ADK)** | Coordinates conversational reasoning and agent/tool responsibilities |
+| **Generative AI** | **Gemini** | Conversational reasoning and multimodal evidence extraction |
+| **Grounding** | **RAG + canonical trusted-source registry** | Query-time selection of applicable regulatory/provider sources with visible provenance |
+| **Authentication** | **Firebase Authentication** | Authoritative user identity using Google Sign-In |
+| **Persistence** | **Cloud Firestore** | User-isolated financial context and interaction state |
+| **Secret management** | **Google Cloud Secret Manager** | Secure runtime injection of the Gemini API key |
+| **Runtime** | **Google Cloud Run** | Production managed container deployment |
+| **Frontend** | **React 18 + TypeScript + Vite** | Customer-facing web experience |
+| **Backend** | **Express + TypeScript** | Authenticated API boundary and server-side AI execution |
+| **Financial boundary** | **Deterministic calculation logic** | Authoritative amounts, totals, due dates, cash-flow gaps, and simulation arithmetic |
 
 ---
 
-## Secure Personal Gemini Journal / Challenge Core
+## 6. Secure Personal Gemini Journal Foundation
 
-FairAssist incorporates the security and isolation requirements of the Secure Personal Gemini Journal challenge:
+### Firebase Authentication
 
-### 1. Authenticated User Identity
-- Direct integration with **Firebase Authentication (Google Sign-In)**.
-- Authenticated state is managed through `AuthContext.tsx` and protected by `AuthGate.tsx`.
-- Client requests to `/api/chat` and `/api/analyze-evidence` attach the user's Firebase ID token in the `Authorization: Bearer <token>` header, verified server-side.
-- Borrower personas (e.g. synthetic demonstration data) are purely application data and are never trusted as identity proofs.
+FairAssist uses **Firebase Authentication with Google Sign-In** as its authoritative identity boundary.
 
-### 2. User-Isolated Cloud Firestore Persistence
-- State persists in the dedicated named database: `ai-studio-fairassist-a8a2b6ad-7b34-4311-94e3-b2b3e8cd1f86`.
-- Storage is partitioned under strictly owner-isolated document paths:
-  ```text
-  /users/{userId}/interactions/current_session
-  ```
-- **Firestore Security Rules (`firestore.rules`)** enforce authenticated owner read/write boundaries with path and payload UID validation:
-  ```javascript
-  rules_version = '2';
-  service cloud.firestore {
-    match /databases/{database}/documents {
-      match /users/{userId}/interactions/{interactionId} {
-        allow read: if request.auth != null
-                    && request.auth.uid == userId;
-        allow write: if request.auth != null
-                     && request.auth.uid == userId
-                     && request.resource.data.userId == userId;
-      }
+- `AuthContext.tsx` manages authenticated state.
+- `AuthGate.tsx` protects the application experience.
+- Authenticated API calls attach the Firebase ID token.
+- Privileged backend operations verify user identity server-side.
+- Demo personas are application data only and are never treated as proof of identity.
+
+### Owner-Isolated Firestore
+
+Private user state is persisted under owner-bound paths such as:
+
+```text
+/users/{userId}/interactions/current_session
+```
+
+Firestore rules enforce authenticated ownership:
+
+```javascript
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId}/interactions/{interactionId} {
+      allow read:
+        if request.auth != null
+        && request.auth.uid == userId;
+
+      allow write:
+        if request.auth != null
+        && request.auth.uid == userId
+        && request.resource.data.userId == userId;
     }
   }
-  ```
+}
+```
 
-### 3. Session Lifecycle & Quarantine Guardrails
-- **Rehydration & Autosave**: Persisted user state automatically rehydrates upon login and page reload, with change-guarded debounced autosaving.
-- **Guided Sample Quarantine**: Demonstration sample scenarios are quarantined in local memory and cannot silently overwrite an authenticated user's persisted session.
-- **Payload Sanitization**: Evidence blobs and transient image buffers are stripped prior to database writes, preserving transactional efficiency.
+### Guided Sample Isolation
 
-### 4. Zero-Hardcoded Secrets & Secret Manager Runtime Binding
-- No API keys, tokens, private keys, or service-account JSON files are stored in the codebase or client bundles.
-- Production `GEMINI_API_KEY` is provisioned via **Google Cloud Secret Manager** and bound to Cloud Run as a secure environment variable at runtime.
-- Backend code accesses credentials exclusively through `process.env.GEMINI_API_KEY`.
+FairAssist has two intentionally separated paths:
 
----
+- **Guided Sample:** fixed synthetic demonstration data.
+- **Own Evidence:** authenticated borrower evidence and financial context.
 
-## Why FairAssist
+Sample data is quarantined from the authenticated user's persisted financial state to prevent accidental mixing.
 
-A repayment problem is often not simply about whether someone earns enough money.
+### Secret Management
 
-The real challenge can be **timing, fragmented information, and uncertainty**.
+Production secrets are not hardcoded in the repository or browser bundle.
 
-A consumer may have:
+`GEMINI_API_KEY` is read server-side from:
 
-- several repayments due before payday;
-- limited cash available today;
-- repayment information distributed across screenshots, documents, messages, and lender applications;
-- incomplete understanding of applicable regulations and lender policies;
-- uncertainty about which obligation requires attention first;
-- no clear distinction between an urgent deadline and the best way to allocate available cash.
+```text
+process.env.GEMINI_API_KEY
+```
 
-FairAssist turns those fragmented signals into a structured financial decision context.
-
-It focuses on five questions:
-
-1. **What financial evidence has actually been confirmed?**
-2. **What repayment obligations exist, and when are they due?**
-3. **What cash and salary timing is available?**
-4. **What trusted regulations or policies are relevant?**
-5. **What should the user review or do next without allowing AI to overstep into an autonomous financial decision?**
+In production it is supplied through **Google Cloud Secret Manager** and referenced by the Cloud Run revision.
 
 ---
 
-## Core Capabilities
+## 7. Gemini Multimodal Evidence
 
-### Multimodal Financial Evidence Analysis
+Borrowers can provide repayment evidence through:
 
-Users can provide financial evidence through:
+- screenshot upload;
+- camera capture;
+- PDF/document upload.
 
-- screenshots;
-- photographs;
-- PDF documents;
-- repayment notifications;
-- lender application screens;
-- salary slips;
-- bank-related financial documents;
-- other relevant supporting evidence.
-
-Gemini analyses submitted evidence multimodally and extracts supported information such as:
+Gemini extracts supported fields such as:
 
 - institution;
-- legal entity;
-- financial product;
+- product;
 - repayment amount;
 - due date;
-- account or facility reference;
+- account/facility reference;
 - evidence category;
-- obligation status;
-- confidence level;
-- uncertain fields.
+- confidence and uncertain fields.
 
-FairAssist follows an **evidence-before-assumption** principle.
+The borrower sees a **review step before confirmation**. Extracted data is not silently accepted into financial context.
 
-If information cannot be reliably extracted, the system identifies it as uncertain rather than silently inventing financial facts.
+![Gemini multimodal evidence review](docs/screenshots/02_multimodal_evidence_review.png)
 
----
+### Evidence-Before-Assumption
 
-### Evidence-to-Obligation Mapping
+If Gemini cannot confidently support a field from the evidence, FairAssist keeps it uncertain instead of inventing a financial fact.
 
-Confirmed evidence is translated into a structured view of the user's financial situation.
-
-FairAssist distinguishes between:
-
-- active repayment obligations;
-- collection notices;
-- salary and payroll evidence;
-- bank statements;
-- informational evidence;
-- credit-report evidence;
-- incomplete or unconfirmed information.
-
-This prevents non-liability information, such as salary evidence or a credit report, from being incorrectly treated as a repayment obligation.
+Uploaded evidence is also treated as untrusted input. Document contents never override authenticated identity or user ownership.
 
 ---
 
-### Context Sufficiency Gate
+## 8. Conversational Prioritisation & Multi-Turn Reasoning
 
-FairAssist does not generate a confident repayment recommendation simply because the user asks:
+FairAssist distinguishes between two concepts that are easy to conflate:
 
-> **Which repayment should I prioritise?**
+### Deadline / Attention Priority
 
-The system first evaluates whether sufficient decision context is available.
+Which obligation needs attention first based on confirmed timing.
 
-Required context may include:
+### Payment Allocation
 
-- confirmed repayment notices;
-- repayment amounts;
-- due dates;
-- available cash;
-- next salary date;
-- expected salary amount;
-- essential living expenses.
+How available cash should actually be distributed.
 
-If context is incomplete, FairAssist requests the missing information before generating a decision-support recommendation.
+An earlier due date does **not** automatically mean the borrower should allocate all available cash to that obligation.
 
-This reduces the risk of confident financial guidance being generated from incomplete information.
+If cash, salary timing, or essential-expense context is missing, FairAssist says what is missing rather than pretending it can complete a full affordability analysis.
+
+A follow-up such as *“Why should I prioritise Easycash first?”* is routed to conversational financial reasoning rather than being misclassified as a provider-verification request.
+
+![Conversational prioritisation follow-up](docs/screenshots/03_prioritisation_followup_reasoning.png)
 
 ---
 
-## AI Intelligence Pipeline
+## 9. AI Intelligence Pipeline
 
-FairAssist represents its reasoning workflow through five stages:
+FairAssist exposes its reasoning lifecycle through five stages:
 
 ```text
 UNDERSTAND → RETRIEVE → VERIFY → REASON → ACT
 ```
 
-### 1. UNDERSTAND
+### UNDERSTAND
+Interpret the question and confirmed evidence.
 
-Interpret the user's request, uploaded evidence, and confirmed financial context.
+### RETRIEVE
+Select trusted regulatory/provider information relevant to the actual query and obligation type.
 
-### 2. RETRIEVE
+### VERIFY
+Check source applicability and whether the source is sufficient to support the claim.
 
-Identify trusted regulatory and institution-specific information relevant to the user's confirmed obligations.
+### REASON
+Combine confirmed evidence, deterministic financial state, and grounded source context.
 
-### 3. VERIFY
+### ACT
+Present next steps while preserving explicit borrower control.
 
-Determine whether retrieved sources are available, applicable, and sufficiently verified before presenting information as current.
+`ACT` does **not** mean autonomous payment or lender interaction.
 
-### 4. REASON
+---
 
-Combine:
+## 10. Regulatory & Provider Grounding
 
-- confirmed evidence;
-- active repayment obligations;
+FairAssist uses a **curated canonical trusted-source registry with dynamic query-time applicability routing**.
+
+It is intentionally not an unrestricted web crawler and it does not use model memory as evidence for provider-specific factual claims.
+
+### Regulatory Sources
+
+Configured regulatory references include, where applicable:
+
+- **POJK No. 22 Tahun 2023** — consumer-protection and collection-conduct context.
+- **POJK No. 40 Tahun 2024** — core LPBBTI / Pindar regulatory framework.
+- **SEOJK No. 19/SEOJK.06/2025** — LPBBTI operational guidance.
+- **POJK No. 8 Tahun 2026** — scoped only to its configured LPBBTI transaction-data reporting / Article 187 revocation context.
+- **PBI No. 6 Tahun 2026** — routed only when the query genuinely concerns a Bank Indonesia-regulated payment-system/payment-service context.
+
+### OJK vs Bank Indonesia Applicability
+
+FairAssist does not attach Bank Indonesia rules simply because a financial institution or repayment is mentioned.
+
+For an ordinary LPBBTI repayment query, the lending context is routed to the applicable **OJK** framework. Bank Indonesia payment-system rules are used only when the question actually concerns BI-regulated payment-system or payment-service matters.
+
+![Regulatory applicability analysis](docs/screenshots/04_regulatory_applicability_analysis.png)
+
+### BCA Is Not LPBBTI
+
+**Bank Central Asia (BCA) is treated as a commercial bank / bank-credit context, not as an LPBBTI provider.**
+
+The presence of a BCA Personal Loan repayment alongside a fintech-lending obligation does not cause FairAssist to apply LPBBTI rules to BCA.
+
+### Provider-Specific Verification
+
+Provider-specific claims require provider-specific evidence.
+
+A general POJK or SEOJK source is **not enough** to prove that a named provider is currently licensed, registered, authorised, or subject to a particular lender policy.
+
+For configured providers, FairAssist can attach canonical provider evidence. For example, Easycash verification uses its legal entity and canonical OJK licensing reference before stating provider status.
+
+![Verified provider licensing: Easycash](docs/screenshots/05_verified_provider_licensing_easycash.png)
+
+### Unknown-Provider Safe Path
+
+If a named provider cannot be verified from the canonical provider registry, FairAssist fails closed.
+
+It may preserve user-confirmed repayment facts such as:
+
+- provider name;
+- amount;
+- due date.
+
+But it will **not invent**:
+
+- licensing/registration status;
+- fees;
+- penalties;
+- restructuring terms;
+- extension policies;
+- provider-specific rights.
+
+Instead, it explicitly states that the provider could not be verified and directs the user to an official source.
+
+![Unknown-provider safety: PinjamCobaX](docs/screenshots/06_unknown_provider_safety_pinjamcobax.png)
+
+### Core Provenance Rule
+
+> **No retrieved evidence = no provider-specific factual claim.**
+
+This applies especially to licence numbers, regulatory status, exact collection rules, fees, penalties, extensions, restructuring, and provider-specific borrower rights.
+
+---
+
+## 11. Deterministic Financial Boundary
+
+Generative AI is not the authority for financial arithmetic.
+
+Deterministic logic remains authoritative for:
+
+- confirmed amounts;
+- repayment totals;
+- due dates;
 - available cash;
-- salary timing;
-- essential expenses where provided;
-- retrieved regulatory information;
-- lender-policy context.
+- obligations due before payday;
+- repayment-only funding gaps;
+- scenario calculations.
 
-Gemini assists with financial timing and decision-support reasoning.
-
-### 5. ACT
-
-Present possible next steps while keeping consequential financial decisions under human control.
-
-The **ACT** stage does not mean FairAssist autonomously performs financial transactions.
-
-The user remains the final decision maker.
+Gemini may explain and contextualise those values, but it must not silently replace them with unconstrained model calculations.
 
 ---
 
-## Cash-Flow Analysis
+## 12. Action Simulator
 
-FairAssist compares:
+The Action Simulator allows a borrower to explore a possible scenario **before committing to an external action**.
 
-- confirmed available cash;
-- repayments due before salary;
-- next salary timing;
-- expected salary amount;
-- essential expenses where available.
+Examples include:
 
-When repayments due before payday exceed confirmed available cash, FairAssist identifies the:
+- payment-timing scenarios;
+- repayment-date adjustment scenarios;
+- evaluating whether additional borrowing mathematically closes a short-term funding gap.
 
-> **Repayment-only funding gap**
-
-FairAssist deliberately distinguishes between two different concepts:
-
-### Deadline / Attention Priority
-
-Which obligation requires attention first based on due date and timing.
-
-### Payment Allocation
-
-How the user's available cash should actually be distributed.
-
-An earlier due date does **not automatically mean all available cash should be allocated to that obligation**.
-
-This distinction is a core FairAssist decision-integrity principle.
-
----
-
-## Action Simulator
-
-FairAssist includes an **Action Simulator** that allows users to explore prospective financial scenarios before making a decision.
-
-### Scenario A: Payment-Timing Adjustment
-
-The simulator can explore what would happen **if a lender confirms** that a repayment date may be moved closer to payday.
-
-FairAssist does not assume that:
+FairAssist does not assume:
 
 - an extension is available;
-- restructuring will be approved;
-- a payment shift will be granted;
-- fees will be waived;
-- lender approval is automatic.
+- a restructuring request will be approved;
+- a lender will waive fees;
+- a payment-date change is guaranteed.
 
-Any lender-specific arrangement requires explicit lender confirmation.
-
-### Scenario B: Additional Borrowing
-
-FairAssist can also examine whether additional borrowing would mathematically close an immediate repayment-only funding gap.
-
-The simulator distinguishes between:
-
-**solving a short-term timing gap**
-
-and:
-
-**creating an additional repayment obligation**.
-
-If the interest rate, lender fees, tenor, or repayment structure is unknown, FairAssist does not manufacture a future repayment cost.
-
-Instead, the future repayment burden remains uncertain until confirmed lender terms are available.
-
-Because additional borrowing creates another obligation and its total repayment cost may not yet be known, **FairAssist may recommend exploring non-debt alternatives first as a decision-support judgement**.
-
-This recommendation is kept separate from regulatory requirements.
-
-Any LPBBTI borrowing remains subject to the applicable regulatory framework and lender-specific terms.
+Any institution-specific arrangement remains subject to lender confirmation.
 
 ---
 
-## Human-in-the-Loop External Action Lifecycle
+## 13. Human-in-the-Loop Action Lifecycle
 
-FairAssist is deliberately designed as **decision support**, not autonomous financial decision-making.
+FairAssist deliberately separates **recommendation** from **execution**.
 
 ```text
 AI recommends
 → borrower approves
 → FairAssist prepares
 → borrower sends externally
-→ borrower explicitly confirms: "I sent this request."
-→ only then is ACT marked completed
+→ borrower explicitly confirms "I sent this request."
+→ only then may ACT be completed
 ```
 
-Important boundaries include:
+Key boundaries:
 
-- **Strict Confirmation Boundary**: Approval or preparation of a message does not mark an external action complete. Only explicit borrower confirmation (*"I sent this request"*) marks an action complete.
-- **No Automatic Payment Execution**: FairAssist never interacts with payment rails or executes fund transfers.
-- **No Unilateral Restructuring Assumptions**: The system never promises that extensions, waivers, or repayment adjustments will be approved by lenders.
-- **Deterministic Arithmetic Authority**: Generative AI models contextualize and explain financial calculations, but authoritative mathematical balances are derived deterministically.
-- **Human Authority**: The borrower remains the final decision maker at all times.
-
----
-
-## Trusted Regulatory & Policy Information
-
-FairAssist uses official and institution-specific information relevant to the user's confirmed obligations.
-
-Sources can include:
-
-- **OJK — Otoritas Jasa Keuangan**
-- regulated financial institutions;
-- official lender websites;
-- official consumer-protection resources.
-
-Regulatory references currently used by FairAssist include, where applicable:
-
-### POJK No. 22 Tahun 2023
-
-**Pelindungan Konsumen dan Masyarakat di Sektor Jasa Keuangan**
-
-Used for consumer-protection principles including transparent information and complaint-handling requirements.
-
-FairAssist does not interpret POJK 22/2023 as automatically guaranteeing restructuring, extensions, or specific repayment options.
-
-### POJK No. 40 Tahun 2024
-
-**Layanan Pendanaan Bersama Berbasis Teknologi Informasi**
-
-Used as part of the regulatory framework applicable to LPBBTI / Pindar (Pinjaman Daring / regulated online lending).
-
-### SEOJK No. 19/SEOJK.06/2025
-
-**Penyelenggaraan Layanan Pendanaan Bersama Berbasis Teknologi Informasi**
-
-Used for operational guidance relevant to LPBBTI.
-
-FairAssist distinguishes between:
-
-- **regulatory requirements**;
-- **institution-specific policies**;
-- **retrieved factual information**;
-- **FairAssist's own decision-support recommendations**.
-
-A general regulatory principle is not intentionally converted into a lender-specific contractual promise.
+- approval alone does not complete an action;
+- preparation is not external execution;
+- FairAssist does not contact lenders automatically;
+- FairAssist does not execute payments;
+- lender approval is never assumed;
+- the borrower remains the final decision maker.
 
 ---
 
-## Source Verification
+## 14. Google Cloud Run & Secret Manager
 
-FairAssist distinguishes between:
-
-> **a trusted domain**
-
-and:
-
-> **a source that has actually been successfully verified**
-
-Trusted domains are restricted through an application allowlist.
-
-A failed request, timeout, or unavailable network connection is **not automatically converted into successful source verification**.
-
-Source states can include:
-
-- `VERIFIED`
-- `UNVERIFIED`
-- `UNAVAILABLE`
-- `NEEDS_REVIEW`
-
-This prevents FairAssist from presenting source freshness with more certainty than the application can support.
-
----
-
-## Agentic Architecture
-
-The diagram below illustrates the implemented agentic architecture:
+FairAssist is deployed to **Google Cloud Run** in:
 
 ```text
-                         ┌─────────────────────────────┐
-                         │   AUTHENTICATED BORROWER    │
-                         │    Firebase Google Sign-In  │
-                         └──────────────┬──────────────┘
-                                        │
-                                        ▼
-                         ┌─────────────────────────────┐
-                         │   FAIRASSIST WEB CLIENT     │
-                         │ React 18 + TypeScript + Vite│
-                         │  - AuthGate & Context       │
-                         │  - UI Dashboard & Simulator │
-                         └──────────────┬──────────────┘
-                                        │ Authenticated API Requests
-                                        │ (Bearer ID Token)
-                                        ▼
-                         ┌─────────────────────────────┐
-                         │   EXPRESS API SERVER        │
-                         │  - Token Verification Auth  │
-                         │  - Lazy Secret Manager Env  │
-                         └──────────────┬──────────────┘
-                                        │
-                                        ▼
-                     ┌─────────────────────────────────────┐
-                     │ Google Agent Development Kit (ADK)  │
-                     │        Agent Orchestration          │
-                     └────────────────┬────────────────────┘
-                                      │
-            ┌─────────────────────────┼─────────────────────────┐
-            │                         │                         │
-            ▼                         ▼                         ▼
- ┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐
- │ EVIDENCE EXTRACTION  │  │ REGULATORY           │  │ FINANCIAL REASONING  │
- │                      │  │ RETRIEVAL (RAG)      │  │                      │
- │ Gemini Multimodal    │  │                      │  │ Deterministic Math + │
- │                      │  │ OJK Regulations      │  │ Gemini Contextual    │
- │ Screenshots / Docs   │  │ Lender Policies      │  │ Cash-Flow Analysis   │
- └──────────┬───────────┘  └──────────┬───────────┘  └──────────┬───────────┘
-            │                         │                         │
-            └─────────────────────────┼─────────────────────────┘
-                                      │
-                                      ▼
-                          ┌─────────────────────────┐
-                          │   CLOUD FIRESTORE DB    │
-                          │ Owner-Isolated Sessions │
-                          │ /users/{uid}/...        │
-                          └───────────┬─────────────┘
-                                      │
-                                      ▼
-                          ┌─────────────────────────┐
-                          │    GOOGLE CLOUD RUN     │
-                          │ Production Service      │
-                          │ Secret Manager Binding  │
-                          └─────────────────────────┘
+asia-southeast1
 ```
 
----
+The production deployment uses secure runtime secret injection.
 
-## Agent Responsibilities
+The production `GEMINI_API_KEY` is referenced from **Google Cloud Secret Manager**, not stored as a plaintext environment-variable value in the active revision.
 
-### Evidence Analysis Agent
+![Cloud Run Secret Manager configuration](docs/screenshots/07_cloud_run_secret_manager_config.png)
 
-Responsible for understanding uploaded financial evidence.
-
-Capabilities include:
-
-- multimodal document analysis;
-- evidence classification;
-- institution recognition;
-- repayment amount extraction;
-- due-date extraction;
-- uncertainty identification;
-- structured financial-context generation.
-
-Gemini provides the multimodal intelligence for this capability.
-
-### Context & Obligation Management
-
-Maintains confirmed financial context derived from evidence and explicit user input.
-
-Responsibilities include:
-
-- identifying active repayment obligations;
-- separating repayment liabilities from informational evidence;
-- maintaining cash information;
-- maintaining salary information;
-- identifying missing context;
-- preventing demo or unconfirmed data from entering normal user state.
-
-### Regulatory Retrieval Agent (RAG)
-
-Uses **RAG** to provide trusted information relevant to the confirmed user situation.
-
-Retrieval sources include:
-
-- OJK regulations;
-- OJK circulars;
-- official lender policies;
-- official consumer-protection resources.
-
-Retrieved material is verified for freshness and applicability before being passed into the reasoning stage.
-
-### Financial Reasoning Agent
-
-Combines:
-
-- confirmed evidence;
-- active obligations;
-- available cash;
-- salary timing;
-- essential expenses;
-- retrieved policy evidence;
-- regulatory context.
-
-Gemini assists with contextual reasoning while FairAssist enforces deterministic mathematical boundaries for calculations.
-
-### Action & Simulation
-
-Supports prospective decision analysis.
-
-Responsibilities include:
-
-- deadline sequencing;
-- scenario comparison;
-- repayment-timing scenarios;
-- borrowing scenarios;
-- lender-confirmation boundaries;
-- financial calculation lineage;
-- human-in-the-loop decision control.
-
----
-
-## Retrieval-Augmented Generation
-
-The RAG architecture ensures that regulatory and policy claims are grounded in retrieved evidence rather than relying solely on a model's internal knowledge.
+The production service also retains the required challenge label:
 
 ```text
-Confirmed user situation
-          │
-          ▼
-Context-aware retrieval query
-          │
-          ▼
-Trusted Knowledge Sources (OJK regulations, circulars, lender policies)
-          │
-          ▼
-Relevant evidence retrieval
-          │
-          ▼
-Source verification & freshness check
-          │
-          ▼
-Grounded context & provenance
-          │
-          ▼
-Gemini reasoning via Google ADK
-          │
-          ▼
-FairAssist response with visible source lineage
+dev-tutorial=cloud-run-ai-challenge
 ```
 
-FairAssist maintains strict separation between:
+![Cloud Run required challenge label](docs/screenshots/08_cloud_run_service_labels.png)
 
-- user-provided evidence;
-- retrieved evidence;
-- regulatory requirements;
-- lender-specific policies;
-- AI reasoning;
-- FairAssist recommendations.
+### Post-Deployment Verification
 
----
+After a deployment change, the verification sequence is:
 
-## Google Cloud Run
-
-FairAssist is deployed on **Google Cloud Run** in `asia-southeast1`.
-
-The production service utilizes:
-
-- **Managed Container Runtime**: Scalable, containerized Node.js backend serving both Vite static client assets and Express API endpoints.
-- **Google Cloud Secret Manager**: Production runtime credentials are securely provided to the application through Secret Manager.
-- **Challenge Label**: Verified and tagged with `dev-tutorial=cloud-run-ai-challenge`.
-- **Server-Side Security**: All Gemini API calls, Google ADK orchestration, RAG retrieval, and token verification occur strictly server-side.
-
-### Production Verification
-
-FairAssist’s own-evidence multimodal workflow has been validated end-to-end on the live Cloud Run deployment. Gemini successfully extracted institution, repayment amount, due date, evidence category, and supporting details from both BCA and Easycash repayment screenshots, while keeping the borrower in control of confirmation before the information enters their financial context. The verified production workflow demonstrates evidence-grounded multimodal analysis operating successfully within FairAssist’s secure Cloud Run architecture.
+1. new Cloud Run revision becomes Ready;
+2. traffic is routed to the intended latest revision;
+3. production URL loads from a fresh browser session;
+4. authentication works;
+5. chat works;
+6. grounded regulatory/provider queries work;
+7. multimodal evidence analysis works;
+8. no production secret is exposed to the client.
 
 ---
 
-## Demo
+## 15. Production Verification Matrix
 
-The FairAssist end-to-end demo shows the complete journey from authenticated conversational guidance and Gemini multimodal evidence analysis to grounded reasoning, scenario simulation, and human-controlled action.
+The final FairAssist production candidate was exercised across the following targeted scenarios.
 
-▶️ **[Watch the FairAssist end-to-end demo](https://youtu.be/xEw1OSPvJv8)**
+| # | Scenario | Final Result |
+|---:|---|:---:|
+| 1 | Production authentication | ✅ PASS |
+| 2 | Guided Sample activation | ✅ PASS |
+| 3 | Financial-state consistency | ✅ PASS |
+| 4 | Repayment prioritisation | ✅ PASS |
+| 5 | Multi-turn contextual reasoning | ✅ PASS |
+| 6 | Constrained-cash guidance | ✅ PASS |
+| 7 | Trusted regulatory retrieval | ✅ PASS |
+| 8 | Regulatory factuality & claim-to-source provenance | ✅ PASS |
+| 9 | Additional-borrowing responsible guardrail | ✅ PASS |
+| 10 | Guided Sample vs Own Evidence isolation | ✅ PASS |
+| 11 | Screenshot multimodal ingestion | ✅ PASS |
+| 12 | Camera multimodal ingestion | ✅ PASS |
+
+**Final targeted regression result: 12 / 12 PASS.**
 
 ---
 
-## Current Capabilities
+## 16. Judge-Facing Evidence Index
 
-The FairAssist application demonstrates the following production capabilities:
+All judge-facing screenshots are standardised to **1920 × 1080 (16:9)** and intentionally omit the browser URL where it is not needed.
 
-| Capability | Status |
+| Evidence | What it proves |
 |---|---|
-| Customer-facing financial decision-support experience | ✅ Implemented |
-| Firebase Google Authentication & Identity Gate | ✅ Implemented |
-| Authenticated backend API access with Bearer ID token verification | ✅ Implemented |
-| Dedicated named Cloud Firestore database integration | ✅ Implemented |
-| User-isolated Firestore persistence (`/users/{uid}/interactions/current_session`) | ✅ Implemented |
-| Session state rehydration & debounced autosave | ✅ Implemented |
-| Cross-user isolation verified with Firestore Security Rules | ✅ Implemented |
-| Guided Sample quarantine (protects authenticated persistence) | ✅ Implemented |
-| Google Cloud Secret Manager runtime credential binding | ✅ Implemented |
-| Google Agent Development Kit (ADK) multi-agent orchestration | ✅ Implemented |
-| Gemini server-side multimodal evidence analysis | ✅ Implemented |
-| Evidence-to-obligation mapping & sanitization | ✅ Implemented |
-| Context Sufficiency Gate | ✅ Implemented |
-| Cash-flow gap analysis & deterministic arithmetic | ✅ Implemented |
-| Interactive financial timeline | ✅ Implemented |
-| Action Simulator | ✅ Implemented |
-| Human-in-the-loop decision boundaries ("I sent this request" lifecycle) | ✅ Implemented |
-| Runtime grounded RAG with visible trusted-source provenance | ✅ Implemented |
-| Trusted-domain allowlist & source freshness tracking | ✅ Implemented |
-| Google Cloud Run production deployment (`dev-tutorial=cloud-run-ai-challenge`) | ✅ Implemented |
+| `01_end_to_end_overview.png` | Customer-facing conversational workspace and integrated decision-support experience |
+| `02_multimodal_evidence_review.png` | Gemini multimodal extraction + borrower review/confirmation |
+| `03_prioritisation_followup_reasoning.png` | Multi-turn conversational reasoning and correct prioritisation routing |
+| `04_regulatory_applicability_analysis.png` | OJK vs BI applicability and query-specific regulatory routing |
+| `05_verified_provider_licensing_easycash.png` | Provider-specific verification with canonical evidence |
+| `06_unknown_provider_safety_pinjamcobax.png` | Fail-closed unknown-provider behaviour |
+| `07_cloud_run_secret_manager_config.png` | Secret Manager runtime binding, no plaintext production Gemini key |
+| `08_cloud_run_service_labels.png` | Required Cloud Run challenge label |
 
 ---
 
-## Sample Scenario
+## 17. Demo Scenario
 
-FairAssist includes a **fixed synthetic borrower scenario used for demonstration and testing**.
+FairAssist includes a fixed **synthetic** guided scenario for demonstration and regression testing.
 
-The sample scenario contains representative:
+The sample is explicitly separated from authenticated Own Evidence state.
+
+A fresh Own Evidence session begins without assuming:
 
 - repayment obligations;
-- repayment dates;
-- salary timing;
 - available cash;
-- supporting financial evidence.
+- salary amount;
+- salary date;
+- borrower-specific facts.
 
-The sample scenario is explicitly quarantined from normal runtime persistence.
-
-Demo-specific values do not silently populate an ordinary user session.
-
-A fresh FairAssist session begins with:
-
-- no repayment obligations;
-- no available cash;
-- no salary information;
-- no borrower-specific financial assumptions.
-
-The sample scenario is activated only when explicitly selected by the user.
+The Guided Sample is activated only when explicitly selected.
 
 ---
 
-## Evidence & Decision Integrity
+## 18. Responsible AI & Security Principles
 
-FairAssist applies six core integrity principles:
+FairAssist follows these implementation principles:
 
 ### Evidence Before Assumption
-
-Financial facts must originate from confirmed evidence or explicit user input. Missing information remains missing until confirmed.
+Financial facts come from confirmed evidence or explicit user input.
 
 ### Context Before Recommendation
+Missing decision context is surfaced rather than silently guessed.
 
-Incomplete context produces clarifying prompts rather than premature financial guidance.
-
-### Retrieval Before Regulatory Claims
-
-Regulatory and policy statements must remain connected to verified trusted sources.
+### Retrieval Before Regulatory Claim
+Regulatory and provider-specific facts must stay within the scope of the source that supports them.
 
 ### Verification Before Certainty
+Unknown or unsupported provider facts fail closed.
 
-Unavailable or unverified sources are never represented as successfully verified.
+### Deterministic Math Before Generative Arithmetic
+Authoritative financial calculations remain outside unconstrained generation.
 
 ### Simulation Before Commitment
+Users can explore consequences before acting.
 
-Users can evaluate financial scenarios and trade-offs before taking consequential action.
+### Human Authority Before External Execution
+AI can recommend and prepare, but the borrower owns the real-world action.
 
-### Human Judgement Remains Final
+### Owner Isolation Before Convenience
+Firebase identity and Firestore rules define data ownership, not document contents or demo personas.
 
-AI supports the decision; the human borrower owns the decision.
-
----
-
-## Security & Privacy Principles
-
-FairAssist adheres to rigorous secret management and data protection practices:
-
-- **Zero Hardcoded Secrets**: No API keys, tokens, private keys, or service-account JSON files are stored in the codebase or client bundles.
-- **Google Cloud Secret Manager**: Production `GEMINI_API_KEY` is stored in Secret Manager and injected at runtime into Cloud Run.
-- **Server-Side Credential Isolation**: Backend reads `process.env.GEMINI_API_KEY`. No Gemini credentials ever reach the client browser.
-- **Public Client Config**: Firebase Web configuration (`firebase-applet-config.json`) contains only public identifiers used by the Firebase Client SDK. Access is secured by Firebase Auth and Firestore Security Rules.
-- **Owner-Isolated Firestore Rules**: Security rules enforce `request.auth.uid == userId` for both reads and writes.
-- **Evidence Sanitization**: File uploads and base64 image data are sanitized before persistence to protect database integrity.
+### Secrets Stay Server-Side
+Production credentials are injected at runtime and are not committed to the repository or exposed in judge-facing screenshots.
 
 ---
 
-## Getting Started
+## 19. Local Development
 
 ### Prerequisites
 
-- Node.js (v18+)
+- Node.js 18+
 - npm or Bun
-- Gemini API key (for local development)
+- Gemini API key for local development
+- Firebase project configuration
 
-### Clone the Repository
+### Clone
 
 ```bash
 git clone https://github.com/IrwanP/fairassist.git
 cd fairassist
 ```
 
-### Install Dependencies
-
-Using npm:
+### Install
 
 ```bash
 npm install
 ```
 
-or Bun:
+### Local Environment
 
-```bash
-bun install
-```
-
-### Local Environment Configuration
-
-For **local development only**, create a `.env` file based on `.env.example`:
+Copy the safe example file:
 
 ```bash
 cp .env.example .env
 ```
 
-Set your development key in `.env`:
+Then supply a development-only Gemini key locally:
 
-```bash
-GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
+```text
+GEMINI_API_KEY=YOUR_LOCAL_DEVELOPMENT_KEY
 ```
 
-> **Note**: In production, credentials are never stored in `.env` files. They are injected automatically by Google Cloud Secret Manager.
+Never commit a populated `.env`.
 
-### Run Locally
+### Run
 
 ```bash
 npm run dev
 ```
 
-The application will start on `http://localhost:3000`.
+Default local URL:
+
+```text
+http://localhost:3000
+```
 
 ---
 
-## Repository Structure
+## 20. Production Deployment Notes
+
+The production deployment should preserve the verified FairAssist runtime rather than replacing it with a starter Journal application.
+
+Required deployment controls:
+
+1. deploy the FairAssist Node/Express + Vite application to Cloud Run;
+2. keep authenticated Firebase/Firestore boundaries intact;
+3. bind `GEMINI_API_KEY` from Google Cloud Secret Manager;
+4. do not store a plaintext production Gemini key in Cloud Run environment values;
+5. keep the service in the intended region;
+6. retain:
+   ```text
+   dev-tutorial=cloud-run-ai-challenge
+   ```
+7. wait for the new revision to become Ready;
+8. verify intended traffic routing;
+9. run the targeted production smoke tests.
+
+---
+
+## 21. Repository Structure
 
 ```text
 fairassist/
@@ -783,36 +612,24 @@ fairassist/
 ├── server.ts
 ├── tsconfig.json
 ├── vite.config.ts
+├── docs/
+│   └── screenshots/
+│       ├── 01_end_to_end_overview.png
+│       ├── 02_multimodal_evidence_review.png
+│       ├── 03_prioritisation_followup_reasoning.png
+│       ├── 04_regulatory_applicability_analysis.png
+│       ├── 05_verified_provider_licensing_easycash.png
+│       ├── 06_unknown_provider_safety_pinjamcobax.png
+│       ├── 07_cloud_run_secret_manager_config.png
+│       └── 08_cloud_run_service_labels.png
 └── src/
     ├── App.tsx
-    ├── main.tsx
-    ├── index.css
-    ├── types.ts
     ├── agents/
     │   ├── fairAssistAgent.ts
     │   ├── financialReasoningAgent.ts
     │   ├── multimodalEvidenceAgent.ts
-    │   ├── regulatoryRetrievalAgent.ts
-    │   └── index.ts
+    │   └── regulatoryRetrievalAgent.ts
     ├── components/
-    │   ├── ActionPlanView.tsx
-    │   ├── ActionSimulator.tsx
-    │   ├── AuthGate.tsx
-    │   ├── ChatComposer.tsx
-    │   ├── EvidenceColumn.tsx
-    │   ├── EvidenceDetailModal.tsx
-    │   ├── EvidenceUploadModal.tsx
-    │   ├── FairAssistCopilot.tsx
-    │   ├── FinancialContextModal.tsx
-    │   ├── FreshnessModal.tsx
-    │   ├── GeminiResponse.tsx
-    │   ├── Header.tsx
-    │   ├── LineageModal.tsx
-    │   ├── MobileFairAssistDrawer.tsx
-    │   ├── NextBestActionsColumn.tsx
-    │   ├── PipelineStepper.tsx
-    │   ├── RulesAndPoliciesView.tsx
-    │   └── SituationColumn.tsx
     ├── contexts/
     │   └── AuthContext.tsx
     ├── data/
@@ -824,35 +641,31 @@ fairassist/
     │   ├── persistenceService.ts
     │   └── policyRetrievalService.ts
     └── utils/
-        ├── api.ts
-        └── canonicalData.ts
 ```
 
 ---
 
-## Disclaimer
+## 22. Limitations
 
-FairAssist provides **AI-assisted financial decision support for informational purposes**.
+FairAssist is intentionally bounded.
 
-It does not provide financial, investment, legal, or credit advice.
+It does **not**:
 
-FairAssist does not guarantee:
+- provide financial, investment, legal, or credit advice;
+- execute payments or access payment rails;
+- autonomously contact lenders;
+- guarantee repayment extensions or restructuring;
+- guarantee lender approval;
+- infer provider licensing from a name or repayment notice;
+- infer provider fees, penalties, policies, or borrower rights without adequate verified source support;
+- treat BCA or other commercial banks as LPBBTI providers;
+- treat model memory as regulatory evidence.
 
-- lender approval;
-- repayment extensions;
-- restructuring;
-- payment-date changes;
-- waivers;
-- reduced interest;
-- reduced fees;
-- changes to credit-reporting treatment;
-- any other lender-specific arrangement.
-
-Users should confirm institution-specific terms directly with the relevant financial services provider and consult qualified professionals where appropriate.
+Institution-specific terms should be confirmed directly with the relevant financial-services provider and, where appropriate, official regulator sources.
 
 ---
 
-## Author
+## 23. Author
 
 **Irwan Prabowo**
 
