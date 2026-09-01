@@ -177,7 +177,7 @@ export const SituationColumn: React.FC<SituationColumnProps> = ({
           </span>
           <div className="text-2xl lg:text-3xl font-light text-stone-900 font-mono tracking-tight whitespace-nowrap">
             {nextSalaryAmount !== null && nextSalaryAmount !== undefined && context.nextSalaryDate !== null
-              ? `Rp${(nextSalaryAmount / 1000000).toFixed(1)}M` 
+              ? `Rp${(nextSalaryAmount / 1000000).toFixed(2)}M` 
               : 'N/A'}
           </div>
           <p className="text-[11px] text-emerald-700 font-medium mt-1 leading-tight">
