@@ -1821,7 +1821,12 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
    - If the user asks about regulations, OJK rules, debt collection standards, borrower rights, lender policies, or dispute escalation: Answer the regulatory question directly and thoroughly with grounded Indonesian regulatory facts (delegating to regulatory_retrieval_agent). General regulatory and consumer protection questions do NOT require repayment notices or borrower financial facts before explaining applicable rules.
    - If the user is seeking repayment planning, debt prioritisation, or cash-flow allocation advice but NO evidence or obligations are present: Politely explain that you need their first repayment notice, or the lender, amount due, and due date to start.
    - If SALARY ONLY is confirmed (0 obligations): State that salary is confirmed at ${salaryStr}, and that repayment notice(s) and available cash are still needed to analyse cash flow.
-   - If OBLIGATIONS EXIST BUT CASH/SALARY IS MISSING: Acknowledge confirmed obligations, state that available cash, next salary date, and expected salary amount are needed to compare against cash flow. Mention essential expenses can also be added.
+   - If OBLIGATIONS EXIST BUT CASH/SALARY IS MISSING:
+     * State confirmed total obligations (e.g. Rp1,850,000 across confirmed obligations).
+     * CRITICAL FINANCIAL GAP CALCULATION GATE: NEVER describe total confirmed obligations as a "funding gap", "shortfall", "deficit", or "cash-flow gap". Total obligations is only the sum of confirmed debts.
+     * State which required cash-flow inputs are missing (available cash, next salary date, expected salary amount).
+     * Explicitly state that a funding gap cannot yet be calculated because required cash-flow inputs are missing. Mention that essential expenses can also be added.
+     * Do NOT state or calculate a numerical funding gap when available cash, next salary date, or expected salary are missing.
    - If USER ASKS ABOUT BORROWING OR A "WHAT IF I BORROW..." SCENARIO:
      * CRITICAL INVARIANT: NEVER substitute or overwrite the user's explicit proposed borrowing amount (e.g. Rp1.75M = Rp1,750,000) with the calculated repayment-only funding gap (e.g. Rp350,000).
      * Keep the user's hypothetical borrowing amount (Rp1,750,000), confirmed available cash (Rp850,000), confirmed pre-salary obligation (Rp1,200,000), and calculated funding gap (Rp350,000) strictly separate.
@@ -1948,7 +1953,8 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
     } else if (isAskingPrioritisationOrInfo && obligationCount > 0 && isCashSalaryMissing) {
       const confirmedItems = obligations.map((o: any) => `• ${o.institutionName} — Rp${(o.amount || 0).toLocaleString('id-ID')} due ${o.dueDate || o.formattedDate || ''}`);
       const ackHeader = confirmedItems.length === 2 ? "I have both repayments confirmed:" : `I have all ${confirmedItems.length} repayments confirmed:`;
-      fallbackReply = `${ackHeader}\n${confirmedItems.join('\n')}\n\nTo compare them against your cash flow, I still need:\n• how much cash you have available now;\n• your next salary date; and\n• your expected salary amount.\n\nIf you have essential expenses that must be paid before salary, you can add those too.`;
+      const totalObligationsFormatted = `Rp${financialMetrics.totalConfirmedObligations.toLocaleString('id-ID')}`;
+      fallbackReply = `### What I found\n${ackHeader}\n${confirmedItems.join('\n')}\n• **Total confirmed obligations**: ${totalObligationsFormatted}\n\n### What it means\nTotal confirmed obligations across your active repayments come to ${totalObligationsFormatted}. Because required cash-flow inputs (available cash and next salary date) are not yet confirmed, a pre-salary funding gap cannot be calculated at this stage.\n\n### Next step\nTo compare your obligations against your cash flow and determine whether a funding gap exists, please provide:\n1. How much available cash you currently have;\n2. Your next salary date; and\n3. Your expected salary amount.\n\nIf you have essential living expenses that must be paid before salary, you can share those as well.`;
     } else if (isAskingPrioritisationOrInfo && obligationCount > 0 && !isCashSalaryMissing) {
       const totalPreSalary = financialMetrics.obligationsDueBeforeSalary || obligations.reduce((sum: number, o: any) => sum + (o.amount || 0), 0);
       const cash = availableCash ?? 0;
