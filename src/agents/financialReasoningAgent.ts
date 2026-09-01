@@ -46,7 +46,7 @@ Core Operating Principles & Deterministic Reasoning Rules:
      * CRITICAL INVARIANT: NEVER describe a negative balance as a positive residual or write contradictory statements such as "is sufficient to cover ... which would leave Rp-350,000".
      * Explicitly describe the difference as a "shortfall", "funding gap", or "cash-flow gap".
      * Always state clearly:
-       "Your confirmed available cash of Rp850,000 is Rp350,000 short of the Rp1,200,000 repayment due on 25 August 2026. Your salary is expected on 28 August 2026, three days after the repayment due date."
+       "Your confirmed available cash of Rp850,000 is Rp350,000 short of the Rp1,200,000 repayment due on 25 September 2026. Your salary is expected on 28 September 2026, three days after the repayment due date."
    - If availableCash >= earliest obligation amount, but availableCash < total pre-salary obligations:
      * Distinguish individual coverage of the earliest obligation from the whole-portfolio pre-salary funding gap:
        State that available cash can individually cover the earliest obligation (leaving RpX), but total pre-salary obligations (RpY) exceed available cash, resulting in a pre-salary funding gap of RpZ before salary.
@@ -64,9 +64,20 @@ Core Operating Principles & Deterministic Reasoning Rules:
      * UNKNOWN TERMS & NO FABRICATED AFFORDABILITY: Explain that loan interest, fees, tenor, repayment schedule, and instalment are unknown unless supplied. Because essential living expenses are also not confirmed, a full affordability conclusion must not be fabricated.
      * RISK & BURDEN EXPLANATION: Objectively explain that borrowing Rp1,750,000 creates an additional repayment obligation subject to lender interest and fees. If a specific lender is not identified, lender-specific interest, fees, tenor, and regulatory classification remain unverified until a provider is specified. DO NOT attach, cite, assert, or imply POJK No. 40 Tahun 2024, SEOJK No. 19/SEOJK.06/2025, LPBBTI, Pindar, or any lender/product-specific regulation to that hypothetical borrowing. Regulatory/source scope must remain neutral ("Lender not specified").
      * NON-DEBT ALTERNATIVES: Compare this scenario against non-debt alternatives, including contacting the earliest lender (BCA) before its due date to inquire about possible repayment arrangements or moving the payment date to payday, noting that any date change requires explicit lender confirmation.
-     * STATE IMMUTABILITY: Clarify that this scenario is purely hypothetical and does not mutate or commit canonical confirmed state (the BCA obligation remains Rp1,200,000 due 25 August 2026, cash remains Rp850,000, funding gap remains Rp350,000).
+     * STATE IMMUTABILITY: Clarify that this scenario is purely hypothetical and does not mutate or commit canonical confirmed state (the BCA obligation remains Rp1,200,000 due 25 September 2026, cash remains Rp850,000, funding gap remains Rp350,000).
 
-4. Repayment Prioritisation Hierarchy:
+4. Financial Gap Calculation Gate (CRITICAL INVARIANT):
+   - NEVER describe total confirmed obligations (e.g. Rp1,850,000) as a "funding gap", "shortfall", "deficit", or "cash-flow gap". Total obligations is only the sum of confirmed debts.
+   - A numerical funding gap may be stated ONLY when the deterministic financial calculation layer has sufficient confirmed inputs to calculate it (both available cash and next salary date are confirmed).
+   - If required cash-flow inputs are missing (available cash, next salary date, or expected salary):
+     * state the confirmed total obligations if known (e.g. Rp1,850,000 across 2 obligations);
+     * state which required cash-flow information is missing (available cash, next salary date, expected salary);
+     * explicitly state that the funding gap cannot yet be calculated.
+   - Conversational output must NOT invent, infer, or independently calculate a funding gap when the deterministic financial state does not provide one.
+   - If the deterministic funding-gap value is unavailable or null, omit every numerical funding-gap statement.
+   - Preserve valid funding-gap calculations when sufficient confirmed inputs exist (e.g. Guided Sample: available cash Rp850,000, pre-salary obligations Rp1,950,000, salary Rp8,500,000 -> pre-salary funding gap Rp1,100,000).
+
+5. Repayment Prioritisation Hierarchy:
    - Use the following explainable, conservative decision hierarchy:
      1. Confirmed overdue obligation, if any.
      2. Earliest confirmed due date.
@@ -76,16 +87,16 @@ Core Operating Principles & Deterministic Reasoning Rules:
      6. Do NOT present recommendations as mandatory financial advice. State that an obligation "requires earlier attention" or is the "earliest confirmed deadline".
      7. Always note that any payment date change or relief request requires explicit lender confirmation.
 
-5. Deterministic Arithmetic:
+6. Deterministic Arithmetic:
    - Always call the 'calculate_financial_metrics' tool to perform exact integer IDR calculations for total obligations, pre-salary obligations, available cash, funding gap, shortfalls, scenario borrowing comparisons, and chronological order.
    - Do NOT perform mental arithmetic or guess totals.
 
-6. Output Structure:
+7. Output Structure:
    Provide clear, grounded responses formatted with:
    ### What I found
-   - Confirmed facts: total pre-salary obligations, confirmed available cash, confirmed salary timing, calculated pre-salary funding gap or shortfall, and explicit user scenario borrowing amount (if asked). Explicitly mention essential expenses status.
+   - Confirmed facts: total pre-salary obligations, confirmed available cash, confirmed salary timing, calculated pre-salary funding gap or shortfall (if calculable), and explicit user scenario borrowing amount (if asked). Explicitly mention essential expenses status.
    ### What it means
-   - Timing conflict analysis and scenario comparison: compare requested borrowing against the shortfall without conflating them, explain cash sufficiency (or shortfall) accurately without contradictions, and clarify the portfolio funding gap before salary.
+   - Timing conflict analysis and scenario comparison: compare requested borrowing against the shortfall without conflating them, explain cash sufficiency (or shortfall) accurately without contradictions, and clarify the portfolio funding gap before salary (if calculable).
    ### Next step
    - Responsible, actionable decision support: contacting the earliest lender before its due date to explore available repayment choices, reviewing subsequent deadlines, and comparing scenarios in the Action Simulator.`;
 
@@ -112,12 +123,14 @@ export interface FinancialContextInput {
 
 export interface CalculatedFinancialMetrics {
   totalConfirmedObligations: number;
-  obligationsDueBeforeSalary: number;
-  availableConfirmedCash: number;
-  preSalaryFundingGap: number;
-  preSalaryShortfall: number;
-  isCashSufficientForPreSalary: boolean;
-  totalFundingGap: number;
+  obligationsDueBeforeSalary: number | null;
+  availableConfirmedCash: number | null;
+  preSalaryFundingGap: number | null;
+  preSalaryShortfall: number | null;
+  isCashSufficientForPreSalary: boolean | null;
+  totalFundingGap: number | null;
+  isFundingGapCalculable: boolean;
+  fundingGapStatus: 'CALCULATED' | 'UNAVAILABLE_MISSING_CASH_FLOW_INPUTS';
   sortedObligations: Array<FinancialObligationInput & {
     parsedTimestamp: number;
     isOverdue: boolean;
@@ -133,8 +146,8 @@ export interface CalculatedFinancialMetrics {
   hasOverdue: boolean;
   overdueObligations: FinancialObligationInput[];
   isEarliestCoveredIndividually: boolean;
-  earliestShortfall: number;
-  remainingCashAfterEarliest: number;
+  earliestShortfall: number | null;
+  remainingCashAfterEarliest: number | null;
   earliestCoverageSummary: string;
   salaryTimingVsEarliest: string;
   tieDetected: boolean;
@@ -290,15 +303,19 @@ export function calculateFinancialMetrics(context: FinancialContextInput): Calcu
     missingCriticalFields.push('obligations');
   }
 
-  const availableCash = typeof context.availableCash === 'number' && !isNaN(context.availableCash)
-    ? Math.max(0, Math.round(context.availableCash))
+  const isCashConfirmed = context.availableCash !== null && context.availableCash !== undefined && typeof context.availableCash === 'number' && !isNaN(context.availableCash);
+  const isSalaryDateConfirmed = Boolean(context.nextSalaryDate);
+  const isFundingGapCalculable = isCashConfirmed && isSalaryDateConfirmed;
+
+  const availableCash = isCashConfirmed
+    ? Math.max(0, Math.round(context.availableCash!))
     : 0;
 
-  if (context.availableCash === null || context.availableCash === undefined) {
+  if (!isCashConfirmed) {
     missingCriticalFields.push('availableCash');
   }
 
-  if (!context.nextSalaryDate) {
+  if (!isSalaryDateConfirmed) {
     missingCriticalFields.push('nextSalaryDate');
   }
 
@@ -306,12 +323,13 @@ export function calculateFinancialMetrics(context: FinancialContextInput): Calcu
     missingCriticalFields.push('nextSalaryAmount');
   }
 
-  const salaryTimestamp = context.nextSalaryDate
-    ? parseDateToTimestamp(context.nextSalaryDate)
+  const salaryTimestamp = isSalaryDateConfirmed
+    ? parseDateToTimestamp(context.nextSalaryDate!)
     : Number.MAX_SAFE_INTEGER;
 
   let totalConfirmedObligations = 0;
-  let obligationsDueBeforeSalary = 0;
+  let obligationsDueBeforeSalaryCount = 0;
+  let obligationsDueBeforeSalaryAmount = 0;
   const overdueObligations: FinancialObligationInput[] = [];
 
   const sortedObligations = rawObligations
@@ -330,9 +348,10 @@ export function calculateFinancialMetrics(context: FinancialContextInput): Calcu
         overdueObligations.push(obl);
       }
 
-      const isPreSalary = parsedTimestamp <= salaryTimestamp;
+      const isPreSalary = isSalaryDateConfirmed && parsedTimestamp <= salaryTimestamp;
       if (isPreSalary) {
-        obligationsDueBeforeSalary += amt;
+        obligationsDueBeforeSalaryCount += 1;
+        obligationsDueBeforeSalaryAmount += amt;
       }
 
       return {
@@ -352,27 +371,29 @@ export function calculateFinancialMetrics(context: FinancialContextInput): Calcu
       return a.parsedTimestamp - b.parsedTimestamp;
     });
 
-  const preSalaryFundingGap = Math.max(0, obligationsDueBeforeSalary - availableCash);
-  const preSalaryShortfall = preSalaryFundingGap;
-  const isCashSufficientForPreSalary = availableCash >= obligationsDueBeforeSalary && obligationsDueBeforeSalary > 0;
-  const totalFundingGap = Math.max(0, totalConfirmedObligations - availableCash);
-
   const earliestObligation = sortedObligations.length > 0 ? sortedObligations[0] : null;
   const earliestAmount = earliestObligation ? earliestObligation.amount : 0;
   const hasOverdue = overdueObligations.length > 0;
 
-  // Strict invariant: only true if available cash is greater than or equal to earliest amount
-  const isEarliestCoveredIndividually = earliestObligation
+  // Strict calculation gate: only calculate funding gap and shortfalls when cash and salary date are confirmed
+  const obligationsDueBeforeSalary = isSalaryDateConfirmed ? obligationsDueBeforeSalaryAmount : null;
+  const preSalaryFundingGap = isFundingGapCalculable ? Math.max(0, obligationsDueBeforeSalaryAmount - availableCash) : null;
+  const preSalaryShortfall = preSalaryFundingGap;
+  const isCashSufficientForPreSalary = isFundingGapCalculable ? (availableCash >= obligationsDueBeforeSalaryAmount && obligationsDueBeforeSalaryAmount > 0) : null;
+  const totalFundingGap = isCashConfirmed ? Math.max(0, totalConfirmedObligations - availableCash) : null;
+
+  // Strict invariant: only true if available cash is confirmed and >= earliest amount
+  const isEarliestCoveredIndividually = isCashConfirmed && earliestObligation
     ? availableCash >= earliestAmount && earliestAmount > 0
     : false;
 
-  const earliestShortfall = earliestObligation
+  const earliestShortfall = isCashConfirmed && earliestObligation
     ? Math.max(0, earliestAmount - availableCash)
-    : 0;
+    : null;
 
   const remainingCashAfterEarliest = isEarliestCoveredIndividually
     ? Math.max(0, availableCash - earliestAmount)
-    : 0;
+    : null;
 
   // Compute timing relationship between earliest obligation and salary
   let salaryTimingVsEarliest = '';
@@ -394,10 +415,12 @@ export function calculateFinancialMetrics(context: FinancialContextInput): Calcu
 
   let earliestCoverageSummary = '';
   if (earliestObligation) {
-    if (isEarliestCoveredIndividually) {
-      earliestCoverageSummary = `Your confirmed available cash of Rp${availableCash.toLocaleString('id-ID')} is sufficient to cover the Rp${earliestAmount.toLocaleString('id-ID')} ${earliestObligation.institutionName} repayment individually, leaving Rp${remainingCashAfterEarliest.toLocaleString('id-ID')}.`;
+    if (!isCashConfirmed) {
+      earliestCoverageSummary = `Cannot determine payment coverage or shortfall for ${earliestObligation.institutionName} because available cash is not confirmed.`;
+    } else if (isEarliestCoveredIndividually) {
+      earliestCoverageSummary = `Your confirmed available cash of Rp${availableCash.toLocaleString('id-ID')} is sufficient to cover the Rp${earliestAmount.toLocaleString('id-ID')} ${earliestObligation.institutionName} repayment individually, leaving Rp${(remainingCashAfterEarliest ?? 0).toLocaleString('id-ID')}.`;
     } else {
-      earliestCoverageSummary = `Your confirmed available cash of Rp${availableCash.toLocaleString('id-ID')} is Rp${earliestShortfall.toLocaleString('id-ID')} short of the Rp${earliestAmount.toLocaleString('id-ID')} repayment due on ${earliestObligation.dueDate}.${salaryTimingVsEarliest ? ` ${salaryTimingVsEarliest}` : ''}`;
+      earliestCoverageSummary = `Your confirmed available cash of Rp${availableCash.toLocaleString('id-ID')} is Rp${(earliestShortfall ?? 0).toLocaleString('id-ID')} short of the Rp${earliestAmount.toLocaleString('id-ID')} repayment due on ${earliestObligation.dueDate}.${salaryTimingVsEarliest ? ` ${salaryTimingVsEarliest}` : ''}`;
     }
   }
 
@@ -424,28 +447,37 @@ export function calculateFinancialMetrics(context: FinancialContextInput): Calcu
   let scenarioRemainingAfterRepayment: number | null = null;
 
   if (scenarioBorrowingAmount !== null) {
-    scenarioTotalFundsIfBorrowed = availableCash + scenarioBorrowingAmount;
-    scenarioRemainingAfterRepayment = Math.max(0, scenarioTotalFundsIfBorrowed - obligationsDueBeforeSalary);
-    scenarioBorrowingDiff = scenarioBorrowingAmount - preSalaryFundingGap;
-
-    if (scenarioBorrowingDiff > 0) {
-      scenarioBorrowingComparisonSummary = `Requested scenario borrowing of Rp${scenarioBorrowingAmount.toLocaleString('id-ID')} exceeds your currently identified repayment-only funding gap of Rp${preSalaryFundingGap.toLocaleString('id-ID')} by Rp${scenarioBorrowingDiff.toLocaleString('id-ID')}. If borrowed, temporary available funds before salary would be Rp${scenarioTotalFundsIfBorrowed.toLocaleString('id-ID')} (Rp${availableCash.toLocaleString('id-ID')} cash + Rp${scenarioBorrowingAmount.toLocaleString('id-ID')} loan). After paying confirmed pre-salary obligations of Rp${obligationsDueBeforeSalary.toLocaleString('id-ID')}, a nominal amount of Rp${scenarioRemainingAfterRepayment.toLocaleString('id-ID')} would remain. However, because essential living expenses have not been provided and new borrowing creates a separate liability with unknown interest rates, fees, tenor, and repayment schedule, this Rp${scenarioRemainingAfterRepayment.toLocaleString('id-ID')} must not be treated as disposable cash, savings, or surplus wealth.`;
-    } else if (scenarioBorrowingDiff === 0) {
-      scenarioBorrowingComparisonSummary = `Requested scenario borrowing of Rp${scenarioBorrowingAmount.toLocaleString('id-ID')} equals your currently identified repayment-only funding gap of Rp${preSalaryFundingGap.toLocaleString('id-ID')} (Rp${obligationsDueBeforeSalary.toLocaleString('id-ID')} due minus Rp${availableCash.toLocaleString('id-ID')} cash). While borrowing Rp${scenarioBorrowingAmount.toLocaleString('id-ID')} mathematically covers this pre-salary gap, it does not resolve debt—it creates an additional repayment obligation subject to lender-dependent terms and fees.`;
+    if (!isFundingGapCalculable) {
+      scenarioTotalFundsIfBorrowed = isCashConfirmed ? availableCash + scenarioBorrowingAmount : scenarioBorrowingAmount;
+      scenarioRemainingAfterRepayment = null;
+      scenarioBorrowingDiff = null;
+      scenarioBorrowingComparisonSummary = `Requested scenario borrowing of Rp${scenarioBorrowingAmount.toLocaleString('id-ID')} is noted. Because required cash-flow inputs (available cash or salary timing) are missing, a pre-salary funding gap cannot yet be calculated to compare against this amount.`;
     } else {
-      const shortfallAfterBorrowing = Math.abs(scenarioBorrowingDiff);
-      scenarioBorrowingComparisonSummary = `Requested scenario borrowing of Rp${scenarioBorrowingAmount.toLocaleString('id-ID')} is Rp${shortfallAfterBorrowing.toLocaleString('id-ID')} less than your currently identified repayment-only funding gap of Rp${preSalaryFundingGap.toLocaleString('id-ID')}. A pre-salary shortfall of Rp${shortfallAfterBorrowing.toLocaleString('id-ID')} would still remain before salary arrives.`;
+      scenarioTotalFundsIfBorrowed = availableCash + scenarioBorrowingAmount;
+      scenarioRemainingAfterRepayment = Math.max(0, scenarioTotalFundsIfBorrowed - obligationsDueBeforeSalaryAmount);
+      scenarioBorrowingDiff = scenarioBorrowingAmount - (preSalaryFundingGap ?? 0);
+
+      if (scenarioBorrowingDiff > 0) {
+        scenarioBorrowingComparisonSummary = `Requested scenario borrowing of Rp${scenarioBorrowingAmount.toLocaleString('id-ID')} exceeds your currently identified repayment-only funding gap of Rp${(preSalaryFundingGap ?? 0).toLocaleString('id-ID')} by Rp${scenarioBorrowingDiff.toLocaleString('id-ID')}. If borrowed, temporary available funds before salary would be Rp${scenarioTotalFundsIfBorrowed.toLocaleString('id-ID')} (Rp${availableCash.toLocaleString('id-ID')} cash + Rp${scenarioBorrowingAmount.toLocaleString('id-ID')} loan). After paying confirmed pre-salary obligations of Rp${obligationsDueBeforeSalaryAmount.toLocaleString('id-ID')}, a nominal amount of Rp${scenarioRemainingAfterRepayment.toLocaleString('id-ID')} would remain. However, because essential living expenses have not been provided and new borrowing creates a separate liability with unknown interest rates, fees, tenor, and repayment schedule, this Rp${scenarioRemainingAfterRepayment.toLocaleString('id-ID')} must not be treated as disposable cash, savings, or surplus wealth.`;
+      } else if (scenarioBorrowingDiff === 0) {
+        scenarioBorrowingComparisonSummary = `Requested scenario borrowing of Rp${scenarioBorrowingAmount.toLocaleString('id-ID')} equals your currently identified repayment-only funding gap of Rp${(preSalaryFundingGap ?? 0).toLocaleString('id-ID')} (Rp${obligationsDueBeforeSalaryAmount.toLocaleString('id-ID')} due minus Rp${availableCash.toLocaleString('id-ID')} cash). While borrowing Rp${scenarioBorrowingAmount.toLocaleString('id-ID')} mathematically covers this pre-salary gap, it does not resolve debt—it creates an additional repayment obligation subject to lender-dependent terms and fees.`;
+      } else {
+        const shortfallAfterBorrowing = Math.abs(scenarioBorrowingDiff);
+        scenarioBorrowingComparisonSummary = `Requested scenario borrowing of Rp${scenarioBorrowingAmount.toLocaleString('id-ID')} is Rp${shortfallAfterBorrowing.toLocaleString('id-ID')} less than your currently identified repayment-only funding gap of Rp${(preSalaryFundingGap ?? 0).toLocaleString('id-ID')}. A pre-salary shortfall of Rp${shortfallAfterBorrowing.toLocaleString('id-ID')} would still remain before salary arrives.`;
+      }
     }
   }
 
   return {
     totalConfirmedObligations,
     obligationsDueBeforeSalary,
-    availableConfirmedCash: availableCash,
+    availableConfirmedCash: isCashConfirmed ? availableCash : null,
     preSalaryFundingGap,
     preSalaryShortfall,
     isCashSufficientForPreSalary,
     totalFundingGap,
+    isFundingGapCalculable,
+    fundingGapStatus: isFundingGapCalculable ? 'CALCULATED' : 'UNAVAILABLE_MISSING_CASH_FLOW_INPUTS',
     sortedObligations,
     earliestObligation,
     hasOverdue,
@@ -532,14 +564,16 @@ export const calculateFinancialMetricsTool = new FunctionTool({
       totalConfirmedObligations: metrics.totalConfirmedObligations,
       totalConfirmedObligationsFormatted: `Rp${metrics.totalConfirmedObligations.toLocaleString('id-ID')}`,
       obligationsDueBeforeSalary: metrics.obligationsDueBeforeSalary,
-      obligationsDueBeforeSalaryFormatted: `Rp${metrics.obligationsDueBeforeSalary.toLocaleString('id-ID')}`,
+      obligationsDueBeforeSalaryFormatted: metrics.obligationsDueBeforeSalary !== null ? `Rp${metrics.obligationsDueBeforeSalary.toLocaleString('id-ID')}` : null,
       availableConfirmedCash: metrics.availableConfirmedCash,
-      availableConfirmedCashFormatted: `Rp${metrics.availableConfirmedCash.toLocaleString('id-ID')}`,
+      availableConfirmedCashFormatted: metrics.availableConfirmedCash !== null ? `Rp${metrics.availableConfirmedCash.toLocaleString('id-ID')}` : null,
       preSalaryFundingGap: metrics.preSalaryFundingGap,
-      preSalaryFundingGapFormatted: `Rp${metrics.preSalaryFundingGap.toLocaleString('id-ID')}`,
+      preSalaryFundingGapFormatted: metrics.preSalaryFundingGap !== null ? `Rp${metrics.preSalaryFundingGap.toLocaleString('id-ID')}` : null,
       preSalaryShortfall: metrics.preSalaryShortfall,
-      preSalaryShortfallFormatted: `Rp${metrics.preSalaryShortfall.toLocaleString('id-ID')}`,
+      preSalaryShortfallFormatted: metrics.preSalaryShortfall !== null ? `Rp${metrics.preSalaryShortfall.toLocaleString('id-ID')}` : null,
       isCashSufficientForPreSalary: metrics.isCashSufficientForPreSalary,
+      isFundingGapCalculable: metrics.isFundingGapCalculable,
+      fundingGapStatus: metrics.fundingGapStatus,
       earliestObligation: metrics.earliestObligation
         ? {
             institutionName: metrics.earliestObligation.institutionName,
@@ -552,9 +586,9 @@ export const calculateFinancialMetricsTool = new FunctionTool({
         : null,
       isEarliestCoveredIndividually: metrics.isEarliestCoveredIndividually,
       earliestShortfall: metrics.earliestShortfall,
-      earliestShortfallFormatted: `Rp${metrics.earliestShortfall.toLocaleString('id-ID')}`,
+      earliestShortfallFormatted: metrics.earliestShortfall !== null ? `Rp${metrics.earliestShortfall.toLocaleString('id-ID')}` : null,
       remainingCashAfterEarliest: metrics.remainingCashAfterEarliest,
-      remainingCashAfterEarliestFormatted: metrics.isEarliestCoveredIndividually ? `Rp${metrics.remainingCashAfterEarliest.toLocaleString('id-ID')}` : null,
+      remainingCashAfterEarliestFormatted: metrics.remainingCashAfterEarliest !== null ? `Rp${metrics.remainingCashAfterEarliest.toLocaleString('id-ID')}` : null,
       earliestCoverageSummary: metrics.earliestCoverageSummary,
       salaryTimingVsEarliest: metrics.salaryTimingVsEarliest,
       hasOverdue: metrics.hasOverdue,
@@ -591,7 +625,7 @@ export const retrieveRegulatoryGroundingTool = new FunctionTool({
     properties: {
       institutionName: {
         type: Type.STRING,
-        description: 'Optional institution name (e.g. BCA, AdaKami, EasyCash) to retrieve verified policy.',
+        description: 'Optional institution name (e.g. BCA, AdaKami, Easycash) to retrieve verified policy.',
       },
     },
   },
