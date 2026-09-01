@@ -12,6 +12,7 @@ import {
 } from "./src/agents/fairAssistAgent";
 import {
   MULTIMODAL_EVIDENCE_AGENT_NAME,
+  MULTIMODAL_EVIDENCE_AGENT_INSTRUCTION,
 } from "./src/agents/multimodalEvidenceAgent";
 import {
   FINANCIAL_REASONING_AGENT_NAME,
@@ -23,6 +24,12 @@ import {
   getCanonicalEvidenceDetails,
   normalizeInstitutionName,
 } from "./src/utils/canonicalData";
+import {
+  retrieveApplicableRegulations,
+  verifyInstitution,
+  retrieveInstitutionPolicy,
+  getApplicableInstitutions,
+} from "./src/services/policyRetrievalService";
 
 dotenv.config();
 
@@ -126,16 +133,11 @@ const requireAuth = async (req: AuthenticatedRequest, res: express.Response, nex
 // Initialize Gemini Client safely
 const getGeminiClient = () => {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    console.warn("GEMINI_API_KEY environment variable is missing.");
+  if (!apiKey || apiKey.trim().length === 0) {
+    throw new Error("GEMINI_API_KEY environment variable is required but missing.");
   }
   return new GoogleGenAI({
-    apiKey: apiKey || "dummy-key-for-fallback",
-    httpOptions: {
-      headers: {
-        "User-Agent": "aistudio-build",
-      },
-    },
+    apiKey: apiKey.trim(),
   });
 };
 
@@ -144,7 +146,79 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", app: "FairAssist", timestamp: new Date().toISOString() });
 });
 
-// 1b. Multimodal Evidence Analysis Endpoint (Google ADK Multimodal Evidence Sub-Agent)
+// Helper for exponential backoff delay with jitter
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+interface UpstreamAttemptLog {
+  event: "analyze-evidence";
+  requestId: string;
+  model: string;
+  attempt: number;
+  isFallback: boolean;
+  status: string | number;
+  retryable: boolean;
+  action: "retry" | "fallback" | "abort" | "success";
+}
+
+function logUpstreamAttempt(info: UpstreamAttemptLog) {
+  console.log(
+    `[analyze-evidence] reqId=${info.requestId} model=${info.model} attempt=${info.attempt} isFallback=${info.isFallback} status=${info.status} retryable=${info.retryable} action=${info.action}`
+  );
+}
+
+function extractErrorStatus(err: any): { status: string | number; isRecoverable: boolean; isAuthFailure: boolean } {
+  if (!err) return { status: "UNKNOWN", isRecoverable: false, isAuthFailure: false };
+
+  const rawStatus = err.status || err.statusCode || err.code || err.error?.code || err.response?.status;
+  const statusNum = typeof rawStatus === "number" ? rawStatus : parseInt(rawStatus, 10);
+  
+  if (statusNum === 401 || statusNum === 403) {
+    return { status: statusNum, isRecoverable: false, isAuthFailure: true };
+  }
+
+  if (statusNum === 400 || statusNum === 404) {
+    return { status: statusNum, isRecoverable: false, isAuthFailure: false };
+  }
+
+  if (statusNum === 429 || statusNum === 500 || statusNum === 502 || statusNum === 503 || statusNum === 504) {
+    return { status: statusNum, isRecoverable: true, isAuthFailure: false };
+  }
+
+  const message = String(err.message || err.error?.message || "").toUpperCase();
+  if (
+    message.includes("UNAUTHENTICATED") ||
+    message.includes("PERMISSION_DENIED") ||
+    message.includes("ACCESS_TOKEN_TYPE_UNSUPPORTED") ||
+    message.includes("API_KEY_SERVICE_BLOCKED")
+  ) {
+    return { status: rawStatus || 401, isRecoverable: false, isAuthFailure: true };
+  }
+
+  if (
+    message.includes("INVALID_ARGUMENT") ||
+    message.includes("NOT_FOUND")
+  ) {
+    return { status: rawStatus || 400, isRecoverable: false, isAuthFailure: false };
+  }
+
+  if (
+    message.includes("RESOURCE_EXHAUSTED") ||
+    message.includes("UNAVAILABLE") ||
+    message.includes("INTERNAL") ||
+    message.includes("RATE_LIMIT") ||
+    message.includes("OVERLOADED") ||
+    message.includes("DEADLINE_EXCEEDED") ||
+    message.includes("SOCKET") ||
+    message.includes("ETIMEDOUT") ||
+    message.includes("ECONNRESET")
+  ) {
+    return { status: rawStatus || "RECOVERABLE_NETWORK_ERROR", isRecoverable: true, isAuthFailure: false };
+  }
+
+  return { status: rawStatus || "UNKNOWN_ERROR", isRecoverable: false, isAuthFailure: false };
+}
+
+// 1b. Multimodal Evidence Analysis Endpoint (Resilient Multimodal Fallback)
 app.post("/api/analyze-evidence", requireAuth, apiRateLimiter(30, 60000), async (req, res) => {
   try {
     const body = req.body || {};
@@ -160,96 +234,283 @@ app.post("/api/analyze-evidence", requireAuth, apiRateLimiter(30, 60000), async 
     const activeFileHash = fileHash || `hash-${Date.now()}`;
 
     let cleanBase64 = fileBase64 || "";
-    if (cleanBase64.includes(";base64,")) {
-      cleanBase64 = cleanBase64.split(";base64,")[1];
+    let detectedMime = mimeType;
+    if (cleanBase64.startsWith("data:")) {
+      const match = cleanBase64.match(/^data:([^;]+);base64,/);
+      if (match && match[1]) {
+        detectedMime = match[1];
+      }
+      cleanBase64 = cleanBase64.split(";base64,")[1] || "";
+    } else if (cleanBase64.includes(";base64,")) {
+      cleanBase64 = cleanBase64.split(";base64,")[1] || "";
+    }
+    cleanBase64 = cleanBase64.replace(/\s/g, "");
+
+    const effectiveMimeType = detectedMime || mimeType || (evidenceType === "document" ? "application/pdf" : "image/jpeg");
+
+    const PRIMARY_MODEL = "gemini-3.6-flash";
+    const FALLBACK_MODEL = "gemini-2.5-flash";
+
+    let extractedData: any = null;
+    let successfulModel: string | null = null;
+    let authFailureEncountered = false;
+
+    if (!process.env.GEMINI_API_KEY) {
+      console.warn(`[analyze-evidence] reqId=${activeReqId} error="CONFIG_ERROR: GEMINI_API_KEY environment variable is not configured"`);
     }
 
-    const effectiveMimeType = mimeType || (evidenceType === "document" ? "application/pdf" : "image/png");
-
     if (process.env.GEMINI_API_KEY && cleanBase64.length > 50) {
-      try {
-        const userPrompt = `Please analyse this ${evidenceType || 'financial evidence'} file (${fileName || 'uploaded_evidence'}).
+      const ai = getGeminiClient();
+      const promptText = `Please analyse this ${evidenceType || 'financial evidence'} file (${fileName || 'uploaded_evidence'}).
 Perform multimodal visual analysis over the visible document content: bank/lender logos, figures, labels, due dates, and product names.
-Transfer to multimodal_evidence_agent to record the structured extraction using record_extracted_evidence.
-Do NOT invent missing information. Distinguish CONFIRMED, UNCERTAIN, and MISSING fields.`;
+Do NOT invent missing information. Distinguish CONFIRMED, UNCERTAIN, and MISSING fields.
+Return a structured JSON object.`;
 
-        const adkResult = await runFairAssistRootAgent(userPrompt, {
-          userId: "fairassist_user",
-          sessionId: `evidence_session_${activeEvId}`,
-          evidenceFile: {
-            inlineData: {
-              mimeType: effectiveMimeType,
-              data: cleanBase64,
+      // Upstream attempt plan (max 3 total attempts for interactive flow):
+      // 1. Primary model (gemini-3.6-flash)
+      // 2. Short retry of primary model with backoff & jitter if recoverable
+      // 3. Verified fallback model (gemini-2.5-flash) if recoverable
+      const attemptPlan = [
+        { model: PRIMARY_MODEL, isFallback: false, attemptNum: 1 },
+        { model: PRIMARY_MODEL, isFallback: false, attemptNum: 2 },
+        { model: FALLBACK_MODEL, isFallback: true, attemptNum: 3 },
+      ];
+
+      for (let i = 0; i < attemptPlan.length; i++) {
+        const step = attemptPlan[i];
+        try {
+          const response = await ai.models.generateContent({
+            model: step.model,
+            contents: [
+              {
+                role: "user",
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: effectiveMimeType,
+                      data: cleanBase64,
+                    },
+                  },
+                  {
+                    text: promptText,
+                  },
+                ],
+              },
+            ],
+            config: {
+              systemInstruction: MULTIMODAL_EVIDENCE_AGENT_INSTRUCTION,
+              responseMimeType: "application/json",
             },
-            fileName,
-            evidenceType,
-            uploadId: activeUploadId,
-            fileHash: activeFileHash,
-            evidenceId: activeEvId,
-            analysisRequestId: activeReqId,
-          },
-        });
+          });
 
-        let extracted: any = adkResult.structuredEvidence;
-
-        if (!extracted && adkResult.text) {
-          try {
-            const jsonMatch = adkResult.text.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-              const parsed = JSON.parse(jsonMatch[0]);
-              if (parsed && (parsed.category || parsed.institution)) {
-                extracted = parsed;
+          let parsed: any = null;
+          if (response.text) {
+            try {
+              parsed = JSON.parse(response.text);
+            } catch {
+              const jsonMatch = response.text.match(/\{[\s\S]*\}/);
+              if (jsonMatch) {
+                parsed = JSON.parse(jsonMatch[0]);
               }
             }
-          } catch {}
-        }
+          }
 
-        if (extracted && (extracted.category || extracted.institution)) {
-          return res.json({
-            ...extracted,
-            uploadId: activeUploadId,
-            fileHash: activeFileHash,
-            evidenceId: activeEvId,
-            analysisRequestId: activeReqId,
-            executionMetadata: adkResult.metadata,
+          if (parsed && typeof parsed === "object") {
+            extractedData = parsed;
+            successfulModel = step.model;
+            logUpstreamAttempt({
+              event: "analyze-evidence",
+              requestId: activeReqId,
+              model: step.model,
+              attempt: step.attemptNum,
+              isFallback: step.isFallback,
+              status: "200_OK",
+              retryable: false,
+              action: "success",
+            });
+            break;
+          } else {
+            logUpstreamAttempt({
+              event: "analyze-evidence",
+              requestId: activeReqId,
+              model: step.model,
+              attempt: step.attemptNum,
+              isFallback: step.isFallback,
+              status: "UNPARSEABLE_JSON",
+              retryable: i < attemptPlan.length - 1,
+              action: i < attemptPlan.length - 1 ? (attemptPlan[i + 1].isFallback ? "fallback" : "retry") : "abort",
+            });
+          }
+        } catch (err: any) {
+          const { status, isRecoverable, isAuthFailure } = extractErrorStatus(err);
+          if (isAuthFailure) {
+            authFailureEncountered = true;
+          }
+          const hasNextAttempt = i < attemptPlan.length - 1;
+          const nextStep = hasNextAttempt ? attemptPlan[i + 1] : null;
+          const nextAction = (!isRecoverable || !hasNextAttempt)
+            ? "abort"
+            : nextStep?.isFallback
+            ? "fallback"
+            : "retry";
+
+          logUpstreamAttempt({
+            event: "analyze-evidence",
+            requestId: activeReqId,
+            model: step.model,
+            attempt: step.attemptNum,
+            isFallback: step.isFallback,
+            status,
+            retryable: isRecoverable,
+            action: nextAction,
           });
+
+          if (!isRecoverable || !hasNextAttempt) {
+            break; // Do NOT retry 400, 401, 403, or once attempts are exhausted
+          }
+
+          // Delay before next attempt (exponential backoff with jitter)
+          const delayMs = step.attemptNum === 1
+            ? 1000 + Math.floor(Math.random() * 400 - 200) // ~1000ms (800-1200ms)
+            : 2000 + Math.floor(Math.random() * 400 - 200); // ~2000ms (1800-2200ms)
+          await sleep(delayMs);
         }
-      } catch (geminiErr) {
-        console.warn("Google ADK multimodal evidence agent error, falling back to unverified review state:", geminiErr);
       }
     }
 
-    // Honest unverified review state when Gemini/ADK is unavailable or fails
-    // Never fabricate arbitrary amounts or institutions
-    return res.json({
+    if (extractedData && typeof extractedData === "object") {
+      // Normalise amountDue
+      let normAmountDue: number | null = null;
+      if (typeof extractedData.amountDue === "number" && !isNaN(extractedData.amountDue)) {
+        normAmountDue = extractedData.amountDue;
+      } else if (typeof extractedData.amountDue === "string") {
+        const cleaned = extractedData.amountDue.replace(/[^\d]/g, "");
+        if (cleaned.length > 0) {
+          normAmountDue = Number(cleaned);
+        }
+      }
+
+      // Normalise dueDate
+      let normDueDate: string | null = null;
+      if (
+        typeof extractedData.dueDate === "string" &&
+        extractedData.dueDate.trim() &&
+        extractedData.dueDate !== "N/A" &&
+        extractedData.dueDate !== "null"
+      ) {
+        normDueDate = extractedData.dueDate.trim();
+      }
+
+      const validCategories = [
+        "Bank repayment notification",
+        "Pindar app repayment screenshot",
+        "Bank statement",
+        "iDeb SLIK – Debitur Perseorangan",
+        "Repayment or borrowing offer",
+        "Repayment-date approval confirmation",
+        "Lender response evidence",
+        "Other financial evidence",
+      ];
+      const category = validCategories.includes(extractedData.category)
+        ? extractedData.category
+        : "Other financial evidence";
+
+      const categoryConfidence = ["High", "Medium", "Low"].includes(extractedData.categoryConfidence)
+        ? extractedData.categoryConfidence
+        : "Medium";
+
+      const confidence = ["High", "Medium", "Low", "Needs review"].includes(extractedData.confidence)
+        ? extractedData.confidence
+        : "Medium";
+
+      const obligationStatus = [
+        "ACTIVE_OBLIGATION",
+        "COLLECTION_NOTICE",
+        "HISTORICAL",
+        "INFORMATIONAL",
+      ].includes(extractedData.obligationStatus)
+        ? extractedData.obligationStatus
+        : "ACTIVE_OBLIGATION";
+
+      return res.json({
+        category,
+        categoryConfidence,
+        institution:
+          typeof extractedData.institution === "string" && extractedData.institution.trim()
+            ? extractedData.institution.trim()
+            : "Needs confirmation",
+        institutionLegalName:
+          typeof extractedData.institutionLegalName === "string"
+            ? extractedData.institutionLegalName
+            : null,
+        product:
+          typeof extractedData.product === "string" && extractedData.product.trim()
+            ? extractedData.product.trim()
+            : "Financial Document",
+        title:
+          typeof extractedData.title === "string" && extractedData.title.trim()
+            ? extractedData.title.trim()
+            : fileName
+            ? `Uploaded Evidence (${fileName})`
+            : "Uploaded Financial Document",
+        amountDue: normAmountDue,
+        dueDate: normDueDate,
+        accountOrFacility:
+          typeof extractedData.accountOrFacility === "string"
+            ? extractedData.accountOrFacility
+            : null,
+        obligationStatus,
+        confidence,
+        summaryStatement:
+          typeof extractedData.summaryStatement === "string"
+            ? extractedData.summaryStatement
+            : "",
+        extractedNotes:
+          typeof extractedData.extractedNotes === "string"
+            ? extractedData.extractedNotes
+            : typeof extractedData.summaryStatement === "string"
+            ? extractedData.summaryStatement
+            : "",
+        extractedFacts: Array.isArray(extractedData.extractedFacts)
+          ? extractedData.extractedFacts
+          : [],
+        missingFields: Array.isArray(extractedData.missingFields)
+          ? extractedData.missingFields
+          : [],
+        ambiguities: Array.isArray(extractedData.ambiguities)
+          ? extractedData.ambiguities
+          : [],
+        uncertainFields: Array.isArray(extractedData.uncertainFields)
+          ? extractedData.uncertainFields
+          : [],
+        uploadId: activeUploadId,
+        fileHash: activeFileHash,
+        evidenceId: activeEvId,
+        analysisRequestId: activeReqId,
+        executionMetadata: {
+          agent: "multimodal_evidence_agent",
+          framework: "@google/genai",
+          modelUsed: successfulModel || "gemini-3.6-flash",
+          phase: "PHASE_2B_MULTIMODAL_EVIDENCE_AGENT",
+          timestamp: new Date().toISOString(),
+        },
+      });
+    }
+
+    // Safe explicit analysis failure state when all Gemini models fail or are unavailable
+    return res.status(503).json({
+      analysisStatus: "TEMPORARILY_UNAVAILABLE",
+      diagnosticCode: authFailureEncountered
+        ? "MULTIMODAL_AUTH_CONFIGURATION_ERROR"
+        : !process.env.GEMINI_API_KEY
+        ? "SERVER_CONFIG_ERROR"
+        : "MULTIMODAL_MODEL_UNAVAILABLE",
+      error: "Gemini could not analyse this evidence right now. Your file has not been added to your financial record. Please retry.",
+      message: "Gemini could not analyse this evidence right now. Your file has not been added to your financial record. Please retry.",
       uploadId: activeUploadId,
       fileHash: activeFileHash,
       evidenceId: activeEvId,
       analysisRequestId: activeReqId,
-      category: "Other financial evidence",
-      categoryConfidence: "Low",
-      institution: "Needs confirmation",
-      institutionLegalName: null,
-      product: "Financial Document",
-      title: fileName ? `Uploaded Evidence (${fileName})` : "Uploaded Financial Document",
-      amountDue: null,
-      dueDate: null,
-      accountOrFacility: null,
-      obligationStatus: "INFORMATIONAL",
-      confidence: "Needs review",
-      summaryStatement: "Analysis could not automatically extract details from this file. Please review and confirm the extracted details manually.",
-      extractedNotes: "Details could not be automatically verified. Please confirm manually.",
-      uncertainFields: ["institution", "product", "amountDue", "dueDate"],
-      extractedFacts: [],
-      missingFields: ["institution", "amountDue", "dueDate"],
-      ambiguities: [],
-      executionMetadata: {
-        agent: FAIRASSIST_ROOT_AGENT_NAME,
-        framework: "@google/adk",
-        phase: "PHASE_2B_MULTIMODAL_EVIDENCE_AGENT",
-        adkBacked: true,
-        delegatedAgents: [MULTIMODAL_EVIDENCE_AGENT_NAME],
-      },
     });
 
   } catch (err: any) {
@@ -735,7 +996,7 @@ Provide structured analysis in JSON format adhering strictly to this schema:
 
         if (hasSalary) {
           const salAmt = nextSalaryAmount ? `Rp${Number(nextSalaryAmount).toLocaleString('id-ID')}` : 'Rp8,500,000';
-          const salDate = nextSalaryDate || '28 Aug 2026';
+          const salDate = nextSalaryDate || '28 Sep 2026';
           quote = `No active repayment obligations have been recorded yet. Your salary information is confirmed at ${salAmt} on ${salDate}.`;
           summary = `I still need your repayment notice(s) and available cash to analyse your cash flow and provide personalised repayment guidance.`;
           defaultActions = [];
@@ -781,7 +1042,7 @@ Provide structured analysis in JSON format adhering strictly to this schema:
       }));
       if (hasSalary) {
         const salAmt = nextSalaryAmount ? `Rp${Number(nextSalaryAmount).toLocaleString('id-ID')}` : 'Rp8,500,000';
-        const salDate = nextSalaryDate || '28 Aug 2026';
+        const salDate = nextSalaryDate || '28 Sep 2026';
         parsed.quote = `No active repayment obligations have been recorded yet. Your salary information is confirmed at ${salAmt} on ${salDate}.`;
         parsed.summary = `I still need your repayment notice(s) and available cash to analyse your cash flow and provide personalised repayment guidance.`;
         parsed.nextBestActions = [];
@@ -821,7 +1082,7 @@ app.post("/api/simulate", requireAuth, apiRateLimiter(40, 60000), async (req, re
 
     const availableCash = financialContext?.availableCash ?? 0;
     const essentialExpenses = financialContext?.essentialExpenses ?? 0;
-    const nextSalaryDate = financialContext?.nextSalaryDate || "28 August 2026";
+    const nextSalaryDate = financialContext?.nextSalaryDate || "28 September 2026";
 
     const sortedObligations = [...obligations].sort((a: any, b: any) => {
       const dA = new Date(a.dueDate || '2099-01-01').getTime();
@@ -975,12 +1236,106 @@ app.post("/api/chat", requireAuth, apiRateLimiter(60, 60000), async (req, res) =
       })
     );
 
+    // Determine target provider key and original name if mentioned
+    let targetProviderKey = '';
+    let targetProviderOriginalName = '';
+    if (lowerMsg.includes('easycash') || lowerMsg.includes('easy cash')) {
+      targetProviderKey = 'easycash';
+      targetProviderOriginalName = 'Easycash';
+    } else if (lowerMsg.includes('adakami') || lowerMsg.includes('ada kami')) {
+      targetProviderKey = 'adakami';
+      targetProviderOriginalName = 'AdaKami';
+    } else if (lowerMsg.includes('bca') || lowerMsg.includes('central asia')) {
+      targetProviderKey = 'bca';
+      targetProviderOriginalName = 'Bank Central Asia (BCA)';
+    } else if (lowerMsg.includes('mandiri')) {
+      targetProviderKey = 'mandiri';
+      targetProviderOriginalName = 'Bank Mandiri';
+    } else if (lowerMsg.includes('bri')) {
+      targetProviderKey = 'bri';
+      targetProviderOriginalName = 'Bank Rakyat Indonesia (BRI)';
+    } else if (lowerMsg.includes('btpn') || lowerMsg.includes('jenius')) {
+      targetProviderKey = 'btpn';
+      targetProviderOriginalName = 'Bank BTPN (Jenius / BTPN)';
+    } else if (lowerMsg.includes('kredit pintar') || lowerMsg.includes('kreditpintar')) {
+      targetProviderKey = 'kreditpintar';
+      targetProviderOriginalName = 'Kredit Pintar';
+    } else {
+      // Check for generic provider patterns in user query (e.g. "Is PinjamCobaX licensed", "Is PinjamCobaX registered", "What is PinjamCobaX's licence", "to PinjamCobaX", etc.)
+      const isLenderPattern = userText.match(/\bis\s+([A-Za-z0-9_-]+)\s+(?:currently\s+)?(?:licen[sc]ed|registered|authori[sz]ed|regulated|under|supervised)\b/i);
+      const whatLicencePattern = userText.match(/\bwhat\s+is\s+([A-Za-z0-9_-]+)(?:'s|’s)?\s+(?:licen[sc]e|registration|status|policy)\b/i);
+      const toLenderMatch = userText.match(/\b(?:about|for|to|lender|provider|from|at|with)\s+([A-Za-z0-9_-]+)\b/i);
+      const lenderPatternMatch = isLenderPattern || whatLicencePattern || toLenderMatch;
+
+      if (lenderPatternMatch && lenderPatternMatch[1]) {
+        const potentialName = lenderPatternMatch[1].trim();
+        const forbiddenWords = [
+          'a', 'an', 'the', 'my', 'your', 'our', 'his', 'her', 'their', 'some', 'any',
+          'is', 'are', 'was', 'were', 'what', 'how', 'why', 'when', 'where', 'who',
+          'repayment', 'obligation', 'debt', 'loan', 'notice', 'salary', 'due', 'pay', 'date',
+          'bank', 'ojk', 'bi', 'pojk', 'seojk', 'pbi', 'rp', 'idr', 'currently', 'really',
+          'actually', 'licensed', 'licenced', 'registered', 'authorised', 'authorized',
+          'regulated', 'indonesia', 'p2p', 'lpbbti', 'there', 'this', 'that'
+        ];
+        if (!forbiddenWords.includes(potentialName.toLowerCase()) && potentialName.length > 2) {
+          targetProviderOriginalName = potentialName;
+          targetProviderKey = potentialName.toLowerCase().replace(/[^a-z0-9]/g, '');
+        }
+      }
+    }
+
+    const verifiedTargetInst = targetProviderKey ? verifyInstitution(targetProviderKey, targetProviderOriginalName || targetProviderKey) : null;
+    const verifiedTargetPolicy = targetProviderKey ? retrieveInstitutionPolicy(targetProviderKey, targetProviderOriginalName || targetProviderKey) : null;
+    const isUnverifiedNamedProvider = Boolean(targetProviderKey) && (!verifiedTargetInst || !verifiedTargetInst.isVerifiedByOJK);
+
+    // A. PROVIDER-SPECIFIC VERIFICATION ROUTING
+    // Strict provider verification keywords: ONLY when user explicitly asks about licensing, registration, authorisation, regulator status, RIPLAY, penalties, fees, policies, etc.
+    const isExplicitProviderVerificationQuery = Boolean(targetProviderKey) && /\b(licen[sc]e|licen[sc]ed|licen[sc]ing|registered|registration|authori[sz]ed|authori[sz]ation|legal entity|riplay|penalty|penalties|fee|fees|restructur|grace period|policy|policies|regulated|supervis(?:ed|ion))\b/i.test(lowerMsg);
+
+    // B. CONVERSATIONAL FOLLOW-UP & FINANCIAL PRIORITISATION PRECEDENCE
+    const isAskingPrioritisationOrInfo =
+      lowerMsg.includes('why should i prioritise') ||
+      lowerMsg.includes('why should i prioritize') ||
+      lowerMsg.includes('why this one first') ||
+      lowerMsg.includes('why is easycash first') ||
+      lowerMsg.includes('why is adakami first') ||
+      lowerMsg.includes('why is bca first') ||
+      lowerMsg.includes('why first') ||
+      lowerMsg.includes('explain that recommendation') ||
+      lowerMsg.includes('explain recommendation') ||
+      lowerMsg.includes('what other information') ||
+      lowerMsg.includes('what information do you need') ||
+      lowerMsg.includes('what info do you need') ||
+      lowerMsg.includes('what do you need') ||
+      lowerMsg.includes('decide what to pay first') ||
+      lowerMsg.includes('what to pay first') ||
+      lowerMsg.includes('which repayment should i prioritise') ||
+      lowerMsg.includes('which repayment should i prioritize') ||
+      lowerMsg.includes('which should i pay first') ||
+      lowerMsg.includes('how should i prioritise') ||
+      lowerMsg.includes('how should i prioritize') ||
+      lowerMsg.includes('how to prioritise') ||
+      lowerMsg.includes('how to prioritize') ||
+      lowerMsg.includes('order of payment') ||
+      lowerMsg.includes('what else do you need') ||
+      lowerMsg.includes('why do you need my available cash') ||
+      lowerMsg.includes('essential expenses before payday') ||
+      lowerMsg.includes('update my salary information') ||
+      lowerMsg.includes('prioritise') ||
+      lowerMsg.includes('prioritize');
+
+    // Extract explicit scenario borrowing amount if proposed in the user message
+    const userScenarioBorrowingAmount = extractScenarioBorrowingAmount(userText);
+
     // Identify lender notice requests
     let requestedLender = '';
-    if (lowerMsg.includes('bca')) requestedLender = 'BCA';
-    else if (lowerMsg.includes('adakami')) requestedLender = 'AdaKami';
-    else if (lowerMsg.includes('easycash')) requestedLender = 'EasyCash';
+    if (lowerMsg.includes('bca') || lowerMsg.includes('central asia')) requestedLender = 'BCA';
+    else if (lowerMsg.includes('adakami') || lowerMsg.includes('ada kami')) requestedLender = 'AdaKami';
+    else if (lowerMsg.includes('easycash') || lowerMsg.includes('easy cash')) requestedLender = 'Easycash';
     else if (lowerMsg.includes('mandiri')) requestedLender = 'Mandiri';
+    else if (lowerMsg.includes('bri')) requestedLender = 'BRI';
+    else if (lowerMsg.includes('btpn') || lowerMsg.includes('jenius')) requestedLender = 'BTPN';
+    else if (lowerMsg.includes('kredit pintar') || lowerMsg.includes('kreditpintar')) requestedLender = 'Kredit Pintar';
 
     const isNoticeRequest = lowerMsg.includes('notice') ||
       (lowerMsg.includes('add') && (lowerMsg.includes('repayment') || lowerMsg.includes('obligation') || lowerMsg.includes('loan') || lowerMsg.includes('notice') || lowerMsg.includes('evidence'))) ||
@@ -990,13 +1345,13 @@ app.post("/api/chat", requireAuth, apiRateLimiter(60, 60000), async (req, res) =
       ? confirmedLenders.some(l => String(l).toLowerCase().includes(requestedLender.toLowerCase()))
       : false;
 
-    // Extract explicit scenario borrowing amount if proposed in the user message
-    const userScenarioBorrowingAmount = extractScenarioBorrowingAmount(userText);
-
-    // Identify queries
+    // Identify borrowing query
     const isAskingBorrowing = lowerMsg.includes('borrow') || lowerMsg.includes('cover the gap') || lowerMsg.includes('new loan') || lowerMsg.includes('additional loan') || userScenarioBorrowingAmount !== null;
-    const isRegulatoryQuery =
-      /\b(ojk|pojk|seojk|slik|ideb|lpbbti)\b/i.test(lowerMsg) ||
+
+    // C. REGULATORY QUERY PRECEDENCE
+    // Check if query is asking about general regulations, rules, collection standards, rights, or Bank Indonesia / OJK applicability
+    const isGeneralOrSectorRegulatoryQuery =
+      /\b(ojk|pojk|seojk|slik|ideb|lpbbti|pbi|bank indonesia)\b/i.test(lowerMsg) ||
       lowerMsg.includes('debt collection') ||
       lowerMsg.includes('collection rule') ||
       lowerMsg.includes('collection regulation') ||
@@ -1016,30 +1371,23 @@ app.post("/api/chat", requireAuth, apiRateLimiter(60, 60000), async (req, res) =
       lowerMsg.includes('lender obligation') ||
       lowerMsg.includes('riplay') ||
       lowerMsg.includes('compliance') ||
-      (lowerMsg.includes('rule') && (lowerMsg.includes('collection') || lowerMsg.includes('regulation') || lowerMsg.includes('law') || lowerMsg.includes('apply') || lowerMsg.includes('legal'))) ||
+      (lowerMsg.includes('rule') && (lowerMsg.includes('collection') || lowerMsg.includes('regulation') || lowerMsg.includes('law') || lowerMsg.includes('apply') || lowerMsg.includes('legal') || lowerMsg.includes('repayment') || lowerMsg.includes('current rules'))) ||
       (lowerMsg.includes('regulation') && !lowerMsg.includes('recommend'));
 
-    const isAskingPrioritisationOrInfo =
-      lowerMsg.includes('what other information') ||
-      lowerMsg.includes('what information do you need') ||
-      lowerMsg.includes('what info do you need') ||
-      lowerMsg.includes('what do you need') ||
-      lowerMsg.includes('decide what to pay first') ||
-      lowerMsg.includes('what to pay first') ||
-      lowerMsg.includes('which repayment should i prioritise') ||
-      lowerMsg.includes('which should i pay first') ||
-      lowerMsg.includes('how should i prioritise') ||
-      lowerMsg.includes('how to prioritise') ||
-      lowerMsg.includes('order of payment') ||
-      lowerMsg.includes('what else do you need') ||
-      lowerMsg.includes('why do you need my available cash') ||
-      lowerMsg.includes('essential expenses before payday') ||
-      lowerMsg.includes('update my salary information') ||
-      lowerMsg.includes('prioritise') ||
-      lowerMsg.includes('prioritize');
+    // STRICT INTENT PRECEDENCE:
+    // 1. Follow-up financial reasoning / prioritisation / notice requests have top precedence over regulatory / verification
+    // 2. Regulatory queries (including "What current rules apply to my Easycash repayment, and does Bank Indonesia regulation apply here?") route to regulatory applicability
+    // 3. Provider-specific verification applies ONLY when explicit licensing/status/RIPLAY/policy keywords are present AND not superseded by prioritisation
+    const isProviderSpecificVerification = !isAskingPrioritisationOrInfo && !isNoticeRequest && isExplicitProviderVerificationQuery;
+
+    const isRegulatoryQuery =
+      !isAskingPrioritisationOrInfo &&
+      !isNoticeRequest &&
+      (isGeneralOrSectorRegulatoryQuery || (isProviderSpecificVerification && !isUnverifiedNamedProvider));
 
     const isFinancialReasoningQuery =
       !isRegulatoryQuery &&
+      !isProviderSpecificVerification &&
       (isAskingBorrowing || isAskingPrioritisationOrInfo || lowerMsg.includes('funding gap') || lowerMsg.includes('cash flow'));
 
     const isCashSalaryMissing = (availableCash === null || availableCash === undefined) || !nextSalaryDate;
@@ -1054,27 +1402,138 @@ app.post("/api/chat", requireAuth, apiRateLimiter(60, 60000), async (req, res) =
       scenarioBorrowingAmount: userScenarioBorrowingAmount,
     });
 
-    // 1. Prepare Trusted Retrieval Sources
-    const retrievedSources = [
-      {
-        sourceTitle: "POJK No. 40 Tahun 2024",
-        organisation: "OJK",
-        confidenceScore: 0.98,
-        matchedClause: "Primary framework for LPBBTI operations and consumer protection",
-        retrievedAt: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
-        status: "Current",
-        url: "https://ojk.go.id/id/regulasi/Pages/POJK-40-Tahun-2024-Layanan-Pendanaan-Bersama-Berbasis-Teknologi-Informasi.aspx"
-      },
-      {
-        sourceTitle: "SEOJK No. 19/SEOJK.06/2025",
-        organisation: "OJK",
-        confidenceScore: 0.96,
-        matchedClause: "Current LPBBTI operational circular superseding SEOJK 19/2023",
-        retrievedAt: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
-        status: "Current",
-        url: "https://ojk.go.id/id/regulasi/Pages/SEOJK-19-SEOJK06-2025-Penyelenggaraan-LPBBTI.aspx"
+    // 1. Dynamic Regulatory & Provider Source Selection
+    const isExplicitlyAskingBI = lowerMsg.includes('bank indonesia') || /\b(bi|pbi)\b/i.test(lowerMsg);
+    const mentionsPaymentSystem = lowerMsg.includes('payment system') || lowerMsg.includes('payment service') || lowerMsg.includes('qris') || lowerMsg.includes('transfer');
+    const isOrdinaryLPBBTIQuery = (lowerMsg.includes('easycash') || lowerMsg.includes('adakami') || lowerMsg.includes('pindar') || lowerMsg.includes('lpbbti')) && !mentionsPaymentSystem;
+
+    // Dynamically retrieve applicable regulatory sectors
+    // Include BI only if the query actually involves BI payment systems
+    const includeBISources = isExplicitlyAskingBI && mentionsPaymentSystem;
+    const dynamicSectors = retrieveApplicableRegulations(financialContext, false, includeBISources);
+
+    const dynamicRetrievedSources: any[] = [];
+    const currentTimeStr = new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+
+    if (isProviderSpecificVerification && verifiedTargetInst && verifiedTargetInst.isVerifiedByOJK) {
+      // Add verified provider canonical sources
+      if (targetProviderKey === 'easycash') {
+        dynamicRetrievedSources.push({
+          sourceTitle: "Easycash OJK Licensed LPBBTI Facility Terms",
+          organisation: "Easycash (PT Indonesia Fintopia Technology)",
+          confidenceScore: 0.99,
+          matchedClause: `OJK Licence KEP-49/D.05/2020 (16 October 2020) · ${verifiedTargetInst.legalEntity}`,
+          retrievedAt: currentTimeStr,
+          status: "Current",
+          url: "https://www.easycash.id/"
+        });
+        dynamicRetrievedSources.push({
+          sourceTitle: "Easycash — RIPLAY & Borrower Terms & Conditions",
+          organisation: "Easycash (PT Indonesia Fintopia Technology)",
+          confidenceScore: 0.97,
+          matchedClause: "RIPLAY product disclosure & consumer complaints route",
+          retrievedAt: currentTimeStr,
+          status: "Current",
+          url: "https://easycash.id/pdf-review-new"
+        });
+      } else if (targetProviderKey === 'adakami') {
+        dynamicRetrievedSources.push({
+          sourceTitle: "AdaKami Official Portal & License Verification",
+          organisation: "AdaKami (PT Pembiayaan Digital Indonesia)",
+          confidenceScore: 0.99,
+          matchedClause: `OJK Licence KEP-128/D.05/2019 (13 December 2019) · ${verifiedTargetInst.legalEntity}`,
+          retrievedAt: currentTimeStr,
+          status: "Current",
+          url: "https://www.adakami.id/"
+        });
+        dynamicRetrievedSources.push({
+          sourceTitle: "AdaKami — Ringkasan Informasi Produk dan Layanan (RIPLAY)",
+          organisation: "AdaKami (PT Pembiayaan Digital Indonesia)",
+          confidenceScore: 0.97,
+          matchedClause: "RIPLAY product summary and complaint escalation channels",
+          retrievedAt: currentTimeStr,
+          status: "Current",
+          url: "https://www.adakami.id/riplay"
+        });
+      } else if (targetProviderKey === 'bca') {
+        dynamicRetrievedSources.push({
+          sourceTitle: "BCA Personal Loan — Official Product Information",
+          organisation: "Bank Central Asia (BCA)",
+          confidenceScore: 0.98,
+          matchedClause: "Licensed banking institution supervised by OJK and Bank Indonesia",
+          retrievedAt: currentTimeStr,
+          status: "Current",
+          url: "https://www.bca.co.id/id/Individu/produk/pinjaman/Pinjaman-Personal"
+        });
       }
-    ];
+    } else if (isRegulatoryQuery) {
+      // Dynamic selection from active regulatory sectors
+      const isDebtCollectionOrConsumerProtection =
+        lowerMsg.includes('collection') ||
+        lowerMsg.includes('hour') ||
+        lowerMsg.includes('time') ||
+        lowerMsg.includes('penagihan') ||
+        lowerMsg.includes('protect') ||
+        lowerMsg.includes('right') ||
+        lowerMsg.includes('hak') ||
+        lowerMsg.includes('slik');
+
+      for (const sec of dynamicSectors) {
+        for (const r of sec.rules) {
+          // If query is specifically about collection hours or cross-sector consumer protection, include POJK 22/2023
+          // Otherwise, POJK 40/2024 and SEOJK 19/2025 apply to LPBBTI
+          if (r.id === 'pojk-22-2023') {
+            if (isDebtCollectionOrConsumerProtection) {
+              dynamicRetrievedSources.push({
+                sourceTitle: r.codeNumber || r.title,
+                organisation: "OJK",
+                confidenceScore: 0.97,
+                matchedClause: r.summaryText || r.keyClauses?.[0] || "Financial consumer protection & collection standards",
+                retrievedAt: currentTimeStr,
+                status: r.status || "Current",
+                url: r.officialUrl
+              });
+            }
+          } else if (r.id === 'pojk-8-2026') {
+            if (lowerMsg.includes('reporting') || lowerMsg.includes('data') || lowerMsg.includes('transaksi') || lowerMsg.includes('pojk 8')) {
+              dynamicRetrievedSources.push({
+                sourceTitle: r.codeNumber || r.title,
+                organisation: "OJK",
+                confidenceScore: 0.95,
+                matchedClause: "LPBBTI transaction data reporting regulation",
+                retrievedAt: currentTimeStr,
+                status: r.status || "Current",
+                url: r.officialUrl
+              });
+            }
+          } else if (r.id === 'pbi-6-2026') {
+            if (includeBISources) {
+              dynamicRetrievedSources.push({
+                sourceTitle: r.codeNumber || r.title,
+                organisation: "Bank Indonesia",
+                confidenceScore: 0.95,
+                matchedClause: "Consumer protection in Bank Indonesia payment systems",
+                retrievedAt: currentTimeStr,
+                status: r.status || "Current",
+                url: r.officialUrl
+              });
+            }
+          } else {
+            dynamicRetrievedSources.push({
+              sourceTitle: r.codeNumber || r.title,
+              organisation: "OJK",
+              confidenceScore: 0.96,
+              matchedClause: r.summaryText || r.keyClauses?.[0] || "Active financial regulation",
+              retrievedAt: currentTimeStr,
+              status: r.status || "Current",
+              url: r.officialUrl
+            });
+          }
+        }
+      }
+    }
+
+    const retrievedSources = dynamicRetrievedSources;
 
     // 2. Prepare Contextual Next Best Actions & Pipeline Activity
     let nextBestActions: any[] = [];
@@ -1294,8 +1753,34 @@ app.post("/api/chat", requireAuth, apiRateLimiter(60, 60000), async (req, res) =
     const expensesStr = essentialExpenses ? `Rp${essentialExpenses.toLocaleString('id-ID')}` : 'Not provided';
 
     const sessionModeInstruction = isDemo
-      ? `SESSION MODE: GUIDED SAMPLE SESSION (August 2026 scenario for borrower persona 'Ayu'). You may address Ayu politely.`
+      ? `SESSION MODE: GUIDED SAMPLE SESSION (September 2026 scenario for borrower persona 'Ayu'). You may address Ayu politely.`
       : `SESSION MODE: NORMAL USER SESSION. Strictly use user-provided evidence and explicit inputs only. Do NOT introduce or mention the name Ayu, sample amounts, or sample assumptions. Preserve a neutral greeting.`;
+
+    // Construct dynamic regulatory and provider context for systemInstruction
+    const dynamicSourcesContext = retrievedSources.length > 0
+      ? retrievedSources.map(s => `- ${s.sourceTitle} (${s.organisation}): ${s.matchedClause}`).join('\n')
+      : '- No specific regulatory or provider sources matched for this query.';
+
+    const providerVerificationContext = verifiedTargetInst && verifiedTargetInst.isVerifiedByOJK
+      ? `VERIFIED PROVIDER STATUS:
+- Institution Name: ${verifiedTargetInst.institutionName}
+- Legal Entity: ${verifiedTargetInst.legalEntity}
+- Licence Number: ${verifiedTargetInst.licenceNumber || 'Not explicitly stated'}
+- OJK Verified: Yes (Verified by OJK)
+- Institution Type: ${verifiedTargetInst.institutionType || 'Other'} (${verifiedTargetInst.institutionType === 'Bank' ? 'Commercial Bank - NOT LPBBTI' : 'LPBBTI / Fintech Lending'})
+- Jurisdiction: ${verifiedTargetInst.jurisdiction}
+- Official URL: ${verifiedTargetInst.officialUrl}
+${verifiedTargetPolicy ? `- Policy Title: ${verifiedTargetPolicy.title}\n- Product Information: ${verifiedTargetPolicy.productInformation}\n- RIPLAY / Assistance: ${verifiedTargetPolicy.riplayInfo || verifiedTargetPolicy.customerAssistance}` : ''}
+- CONTEXT ISOLATION: For pure provider verification or licensing questions, do NOT mention or attach repayment amounts or due dates from other obligations unless explicitly stated in this user message.`
+      : targetProviderKey
+      ? `UNKNOWN / UNVERIFIED PROVIDER:
+- The provider '${targetProviderOriginalName || targetProviderKey}' could not be verified from FairAssist's canonical provider registry.
+- Do NOT present the provider as licensed or unlicensed.
+- Do NOT assume OJK or Bank Indonesia jurisdiction.
+- Do NOT assert licence, fees, penalties, restructuring terms, extensions, or provider-specific policies for this unverified provider.
+- State clearly: "I could not verify ${targetProviderOriginalName || targetProviderKey} from FairAssist's canonical provider registry. I do not have verified evidence to confirm whether ${targetProviderOriginalName || targetProviderKey} is currently licensed or registered by OJK."
+- CONTEXT ISOLATION: Do NOT attach repayment amounts (e.g. Rp650,000), due dates (e.g. 24 September 2026), or existing obligations from other lenders (like Easycash or BCA) to ${targetProviderOriginalName || targetProviderKey} unless explicitly stated by the user in this exact message.`
+      : 'No specific provider query detected.';
 
     const systemInstruction = `
 You are FairAssist, an AI financial decision-support agent for Indonesian consumers.
@@ -1314,9 +1799,10 @@ Confirmed Salary: ${salaryStr}
 Essential Living Expenses: ${expensesStr}
 Confirmed Lenders: ${confirmedLenders.join(', ') || 'None'}
 
-TRUSTED REGULATORY FRAMEWORK:
-- POJK No. 40 Tahun 2024: Primary framework for LPBBTI operations and consumer protection.
-- SEOJK No. 19/SEOJK.06/2025: Current LPBBTI operational circular. (Note: SEOJK 19/2023 was revoked and superseded; do not cite SEOJK 19/2023).
+DYNAMICALLY RETRIEVED TRUSTED SOURCES & GROUNDING:
+${dynamicSourcesContext}
+
+${providerVerificationContext}
 
 CRITICAL DECISION INTEGRITY & GROUNDING RULES:
 1. EVIDENCE BEFORE ASSUMPTION:
@@ -1324,7 +1810,14 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
    - Do NOT invent lenders, loans, amounts, salary, or due dates not in the confirmed context.
    - If user asks to add evidence for a new lender, acknowledge politely, ask them to add the repayment notice, state that you won't assume amount or due date until confirmed, and DO NOT offer premature debt restructuring or contact advice.
 
-2. SITUATION-SPECIFIC GUIDANCE:
+2. CLAIM-TO-SOURCE PROVENANCE & REGULATORY BOUNDARIES:
+   - 08:00–20:00 COLLECTION HOURS: The 08:00–20:00 collection-hours restriction may appear ONLY when POJK No. 22 Tahun 2023 is actually present in the matched retrieved sources. If POJK 22/2023 is absent, completely omit this statement and do not infer it from general knowledge.
+   - POJK 8/2026: Restrict POJK 8/2026 strictly to LPBBTI transaction data reporting and Article 187 revocation. Never use POJK 8/2026 as generic consumer protection grounding.
+   - BANK INDONESIA VS OJK: When the user asks about Bank Indonesia regulation for an ordinary LPBBTI/pindar repayment query (e.g. Easycash, AdaKami), explicitly explain that lending operations are routed to OJK jurisdiction and that PBI 6/2026 is not applied because the query does not concern a Bank Indonesia payment-system or payment-service context.
+   - INSTITUTION CATEGORIES: Do NOT classify all providers as LPBBTI. Easycash and AdaKami are LPBBTI providers. BCA is a commercial BANKING institution (not LPBBTI). Preserve the institution category from canonical verification.
+   - PROVIDER-SPECIFIC CLAIMS & CONTEXT ISOLATION: For questions about licensing, registration, RIPLAY, fees, penalties, or policies of a named lender, cite only verified canonical registry facts (e.g. Easycash is operated by PT Indonesia Fintopia Technology under OJK Licence KEP-49/D.05/2020). If a provider is unknown/unverified, explicitly state that it could not be verified from the canonical registry, without assuming regulatory status. Never attach repayment amounts or due dates from session obligations to a separate lender in a verification query.
+
+3. SITUATION-SPECIFIC GUIDANCE:
    - If the user asks about regulations, OJK rules, debt collection standards, borrower rights, lender policies, or dispute escalation: Answer the regulatory question directly and thoroughly with grounded Indonesian regulatory facts (delegating to regulatory_retrieval_agent). General regulatory and consumer protection questions do NOT require repayment notices or borrower financial facts before explaining applicable rules.
    - If the user is seeking repayment planning, debt prioritisation, or cash-flow allocation advice but NO evidence or obligations are present: Politely explain that you need their first repayment notice, or the lender, amount due, and due date to start.
    - If SALARY ONLY is confirmed (0 obligations): State that salary is confirmed at ${salaryStr}, and that repayment notice(s) and available cash are still needed to analyse cash flow.
@@ -1345,14 +1838,14 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
      - Identify the earliest deadline.
      - CRITICAL CASH SUFFICIENCY INVARIANT:
        * If available cash < amount due before salary (or available cash < earliest repayment obligation): NEVER describe available cash as "sufficient", "enough", "adequate", or able to cover the obligation, and NEVER write contradictory statements like "is sufficient to cover ... which would leave Rp-350,000". Explicitly describe the difference as a "shortfall" or "funding gap".
-       * Use wording equivalent to: "Your confirmed available cash of Rp850,000 is Rp350,000 short of the Rp1,200,000 repayment due on 25 August 2026. Your salary is expected on 28 August 2026, three days after the repayment due date."
+       * Use wording equivalent to: "Your confirmed available cash of Rp850,000 is Rp350,000 short of the Rp1,200,000 repayment due on 25 September 2026. Your salary is expected on 28 September 2026, three days after the repayment due date."
        * If available cash is greater than or equal to the earliest repayment individually, but less than total pre-salary obligations: State that cash can cover the earliest repayment individually (leaving RpX), but total pre-salary obligations exceed available cash by RpY before salary.
      - Distinguish deadline priority (who requires attention first) from payment allocation (how cash is spent).
      - Recommend contacting the earliest lender before its due date to check available repayment choices, noting that any date shift requires explicit lender confirmation.
      - Keep subsequent obligations in view.
      - Note that simulations can be compared in the Action Simulator before deciding.
 
-3. STRUCTURE:
+4. STRUCTURE:
    Use clean Markdown formatting with 3 concise sections where applicable:
    ### What I found
    ### What it means
@@ -1360,16 +1853,58 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
 `;
 
     // 4. Deterministic Fallback Response (for offline / non-API environments)
-    let fallbackReply = `### What I found\n\nYou have an active repayment obligation coming due.\n\n### What it means\n\nContacting your lender before your due date allows you to inquire about payment alignment choices. Any repayment date change depends on lender terms and requires explicit lender confirmation; otherwise the original verified obligation and due date remain applicable.\n\n### Next step\n\n1. Contact customer support before your due date.\n2. Inquire about available repayment choices.\n3. Avoid taking new secondary P2P debt.`;
+    let fallbackReply = `### What I found\n\nYou have an active repayment obligation coming due.\n\n### What it means\n\nContacting your lender before your due date allows you to inquire about payment alignment choices. Any repayment date change depends on lender terms and requires explicit lender confirmation; otherwise the original verified obligation and due date remain applicable.\n\n### Next step\n\n1. Contact customer support before your due date.\n2. Inquire about available repayment choices.\n3. Avoid taking new secondary debt.`;
 
-    if (isRegulatoryQuery) {
-      fallbackReply = `### What I found\nUnder OJK regulations (**POJK No. 40 Tahun 2024** and **SEOJK No. 19/SEOJK.06/2025**), LPBBTI (P2P digital lending) providers and collection agents must follow strict consumer protection and debt collection standards.\n\n### What it means\nKey collection standards and borrower protections include:\n• Collection practices must be ethical, without intimidation, threats, physical violence, or harassment.\n• Direct collection communications are restricted to 08:00 to 20:00 local borrower time.\n• Debt collectors are strictly prohibited from contacting third parties or emergency contacts not legally bound to the debt obligation.\n• Lenders are held legally responsible for the conduct of third-party collection partners.\n• Repayment history is recorded in the OJK SLIK credit registry across Collectibility 1–5.\n\n### Next step\n1. Check your lender’s official customer service and dispute channels.\n2. If you experience collection violations, you can file a complaint with OJK via Kontak 157 (konsumen.ojk.go.id).\n3. Any repayment arrangement or extension remains subject to lender confirmation.`;
+    const hasPOJK22InSources = retrievedSources.some(s => s.sourceTitle?.includes('22') || s.sourceTitle?.toLowerCase().includes('pojk 22'));
+
+    // Check if user is referencing an unverified provider in their message or repayment obligation
+    const explicitAmtMatch = userText.match(/(?:rp|idr)?\s*([0-9]{1,3}(?:[.,][0-9]{3})+|[0-9]+)/i);
+    const explicitAmtStr = explicitAmtMatch ? `Rp${explicitAmtMatch[1].replace(/,/g, '.')}` : '';
+    const explicitDateMatch = userText.match(/\b([0-9]{1,2}\s+[A-Za-z]+\s+[0-9]{4})\b/i);
+    const explicitDateStr = explicitDateMatch ? explicitDateMatch[1] : '';
+
+    const isAskingLicensingOrStatus = isExplicitProviderVerificationQuery || lowerMsg.includes('licensed') || lowerMsg.includes('registered') || lowerMsg.includes('status') || lowerMsg.includes('regulated') || lowerMsg.includes('licence');
+
+    if (isUnverifiedNamedProvider && isProviderSpecificVerification) {
+      const displayName = verifiedTargetInst?.institutionName || targetProviderOriginalName || targetProviderKey;
+
+      if (isAskingLicensingOrStatus && !explicitAmtStr && !explicitDateStr) {
+        fallbackReply = `### What I found\nI could not verify **${displayName}** from FairAssist's canonical provider registry.\n\n### What it means\nI do not have verified evidence to confirm whether **${displayName}** is currently licensed or registered by OJK.\n\n### Next step\nCheck an official OJK source before relying on any licensing claim.`;
+      } else if (explicitAmtStr && explicitDateStr) {
+        fallbackReply = `### What I found\nYou reported a **${explicitAmtStr}** repayment to **${displayName}** due on **${explicitDateStr}**.\n\nI could not verify **${displayName}** from FairAssist's canonical provider registry.\n\n### What it means\nI can still help you reason from the repayment details you provided, but I will not assume the provider's regulatory status or policies. Because canonical provider verification is unavailable, FairAssist cannot confirm licensing status, fees, penalties, or provider-specific restructuring terms.\n\n### Next step\n1. Contact ${displayName} directly through its official customer service channels before your due date to inquire about repayment terms.\n2. Check the provider's registration status directly on OJK Kontak 157 (konsumen.ojk.go.id).\n3. Any repayment date adjustment requires explicit confirmation from the lender.`;
+      } else if (explicitAmtStr) {
+        fallbackReply = `### What I found\nYou reported a **${explicitAmtStr}** repayment to **${displayName}**.\n\nI could not verify **${displayName}** from FairAssist's canonical provider registry.\n\n### What it means\nI can still help you reason from the repayment details you provided, but I will not assume the provider's regulatory status or policies. Because canonical provider verification is unavailable, FairAssist cannot confirm licensing status, fees, penalties, or provider-specific restructuring terms.\n\n### Next step\n1. Contact ${displayName} directly through its official customer service channels before your due date to inquire about repayment terms.\n2. Check the provider's registration status directly on OJK Kontak 157 (konsumen.ojk.go.id).\n3. Any repayment date adjustment requires explicit confirmation from the lender.`;
+      } else {
+        fallbackReply = `### What I found\nI could not verify **${displayName}** from FairAssist's canonical provider registry.\n\n### What it means\nI do not have verified evidence to confirm whether **${displayName}** is currently licensed or registered by OJK.\n\n### Next step\nCheck an official OJK source before relying on any licensing claim.`;
+      }
+    } else if (isProviderSpecificVerification) {
+      if (verifiedTargetInst && verifiedTargetInst.isVerifiedByOJK) {
+        if (targetProviderKey === 'easycash') {
+          fallbackReply = `### What I found\n**Easycash** is operated by **PT Indonesia Fintopia Technology** and holds an active OJK digital lending licence (**KEP-49/D.05/2020**, granted 16 October 2020) as an authorised LPBBTI provider.\n\n### What it means\nAs a licensed LPBBTI platform, Easycash is subject to OJK supervision and must adhere to standard consumer protection frameworks (**POJK No. 40 Tahun 2024** and **SEOJK No. 19/SEOJK.06/2025**).\n• Product terms, fees, and complaint procedures are published in the official Easycash RIPLAY.\n• Borrower reporting is registered in statutory credit registries.\n• Disputes and inquiries can be submitted directly via Easycash customer care or escalated to OJK Kontak 157.\n\n### Next step\n1. Review your loan agreement and RIPLAY terms on the official Easycash app or website (easycash.id).\n2. For repayment adjustments, contact Easycash customer support directly before your due date.`;
+        } else if (targetProviderKey === 'adakami') {
+          fallbackReply = `### What I found\n**AdaKami** is operated by **PT Pembiayaan Digital Indonesia** and is a fully licensed LPBBTI provider authorised by OJK under licence **KEP-128/D.05/2019** (granted 13 December 2019).\n\n### What it means\nAdaKami operates under OJK regulatory oversight (**POJK No. 40 Tahun 2024** and **SEOJK No. 19/SEOJK.06/2025**):\n• Product details, daily interest caps, and fee structures are disclosed in the AdaKami RIPLAY.\n• Collection must comply with OJK ethical standards.\n• Customer complaints can be escalated through AdaKami support (15000-77) or OJK Kontak 157.\n\n### Next step\n1. Check your AdaKami agreement and RIPLAY summary for specific repayment terms.\n2. Contact AdaKami official support if you need assistance with payment scheduling.`;
+        } else if (targetProviderKey === 'bca') {
+          fallbackReply = `### What I found\n**Bank Central Asia (BCA)** (PT Bank Central Asia Tbk) is a commercial banking institution licensed and supervised by the **Otoritas Jasa Keuangan (OJK)** and **Bank Indonesia**.\n\n### What it means\nAs a licensed banking institution (not LPBBTI/P2P lending), BCA's personal loan and credit products are governed by general banking regulations and consumer protection frameworks.\n• Product terms, interest rates, and fees are published in official BCA product documentation.\n• Borrower reporting is registered in SLIK / iDeb.\n• Customer inquiries and restructuring requests can be submitted via Halo BCA (1500888) or official branches.\n\n### Next step\n1. Review your BCA loan agreement and product disclosure.\n2. Contact Halo BCA or your branch before your due date for any inquiries regarding repayment scheduling.`;
+        } else {
+          fallbackReply = `### What I found\n**${verifiedTargetInst.institutionName}** (${verifiedTargetInst.legalEntity}) is verified in the canonical registry under **${verifiedTargetInst.jurisdiction}** jurisdiction.\n\n### What it means\n${verifiedTargetPolicy?.productInformation || 'The institution operates under official regulatory supervision.'}\n\n### Next step\n1. Refer to official institution support channels.\n2. Inquire directly about terms and repayment options.`;
+        }
+      } else {
+        fallbackReply = `### What I found\nI could not verify **${targetProviderOriginalName || targetProviderKey || 'the specified provider'}** from FairAssist's canonical provider registry.\n\n### What it means\nI do not have verified evidence to confirm whether **${targetProviderOriginalName || targetProviderKey || 'the specified provider'}** is currently licensed or registered by OJK.\n\n### Next step\nCheck an official OJK source before relying on any licensing claim.`;
+      }
+    } else if (isExplicitlyAskingBI && isOrdinaryLPBBTIQuery) {
+      fallbackReply = `### What I found\nLPBBTI (P2P digital lending) providers such as Easycash and AdaKami fall under the regulatory authority of the **Otoritas Jasa Keuangan (OJK)** under **POJK No. 40 Tahun 2024** and **SEOJK No. 19/SEOJK.06/2025**.\n\n### What it means\nBank Indonesia regulation **PBI No. 6/2026** governs consumer protection specifically within payment systems (e.g. fund transfers, payment gateways, and QRIS). Because your query concerns digital loan repayment rather than a payment-service dispute, the lending context is routed to OJK regulations, and PBI 6/2026 is not applied.\n\n### Next step\n1. Refer to OJK LPBBTI regulations for rules governing your digital lending obligations.\n2. Contact your lender or OJK Kontak 157 for digital lending inquiries.`;
+    } else if (isRegulatoryQuery) {
+      const collectionHoursBullet = hasPOJK22InSources
+        ? `\n• Direct collection communications are restricted to 08:00 to 20:00 local borrower time under POJK No. 22 Tahun 2023.`
+        : ``;
+
+      fallbackReply = `### What I found\nUnder OJK regulations (**POJK No. 40 Tahun 2024** and **SEOJK No. 19/SEOJK.06/2025**), LPBBTI (P2P digital lending) providers and collection agents must follow strict consumer protection and debt collection standards.\n\n### What it means\nKey collection standards and borrower protections include:\n• Collection practices must be ethical, without intimidation, threats, physical violence, or harassment.${collectionHoursBullet}\n• Debt collectors are strictly prohibited from contacting third parties or emergency contacts not legally bound to the debt obligation.\n• Lenders are held legally responsible for the conduct of third-party collection partners.\n• Repayment history is recorded in statutory credit registries.\n\n### Next step\n1. Check your lender’s official customer service and dispute channels.\n2. If you experience collection violations, you can file a complaint with OJK via Kontak 157 (konsumen.ojk.go.id).\n3. Any repayment arrangement or extension remains subject to lender confirmation.`;
     } else if (obligationCount === 0 && evidenceCount === 0 && !hasSalaryConfirmed) {
       const greeting = isDemo ? "Hello, Ayu.\n\n" : "";
       fallbackReply = `${greeting}I can help, but I need a little more information first.\n\nUpload your first repayment notice, or tell me the lender, amount due and due date.\n\nLet’s start with your first repayment notice.`;
     } else if (obligationCount === 0 && hasSalaryConfirmed) {
       const salAmt = nextSalaryAmount ? `Rp${Number(nextSalaryAmount).toLocaleString('id-ID')}` : 'Rp8,500,000';
-      const salDate = nextSalaryDate || '28 Aug 2026';
+      const salDate = nextSalaryDate || '28 Sep 2026';
       fallbackReply = `Your salary information is confirmed at ${salAmt} expected on ${salDate}.\n\nI still need your repayment notice(s) and available cash to analyse your cash flow and provide personalised repayment guidance.`;
     } else if (isNoticeRequest && (!requestedLender || !isRequestedLenderConfirmed)) {
       const salutation = isDemo ? "Of course, Ayu.\n\n" : "";
@@ -1503,17 +2038,21 @@ CRITICAL DECISION INTEGRITY & GROUNDING RULES:
     };
 
     try {
-      const adkResult = await runFairAssistRootAgent(userText, {
-        systemContext: systemInstruction,
-        userId: isDemo ? "Ayu" : "borrower_user",
-        sessionId: isDemo ? "fairassist_sample_session" : "fairassist_normal_session"
-      });
-      if (adkResult.text && adkResult.text.trim().length > 0) {
-        adkReplyText = adkResult.text;
-      } else {
+      if (isUnverifiedNamedProvider && isAskingLicensingOrStatus && !explicitAmtStr && !explicitDateStr) {
         adkReplyText = fallbackReply;
+      } else {
+        const adkResult = await runFairAssistRootAgent(userText, {
+          systemContext: systemInstruction,
+          userId: isDemo ? "Ayu" : "borrower_user",
+          sessionId: isDemo ? "fairassist_sample_session" : "fairassist_normal_session"
+        });
+        if (adkResult.text && adkResult.text.trim().length > 0) {
+          adkReplyText = adkResult.text;
+        } else {
+          adkReplyText = fallbackReply;
+        }
+        executionMeta = adkResult.metadata;
       }
-      executionMeta = adkResult.metadata;
     } catch (adkErr: any) {
       console.warn("ADK root agent execution encountered issue, falling back to deterministic safe response:", adkErr?.message || adkErr);
       adkReplyText = fallbackReply;
