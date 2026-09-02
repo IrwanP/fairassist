@@ -348,6 +348,8 @@ Deterministic logic remains authoritative for:
 
 Gemini may explain and contextualise those values, but it must not silently replace them with unconstrained model calculations.
 
+A numerical funding gap is stated only when sufficient confirmed cash-flow inputs are available. Total confirmed obligations are never relabelled as a funding gap, shortfall, deficit, or cash-flow gap when the required financial context is missing.
+
 ---
 
 ## 12. Action Simulator
@@ -455,6 +457,22 @@ The final FairAssist production candidate was exercised across the following tar
 
 ---
 
+### Final Production Smoke Verification — 2 September 2026
+
+Following the final frontend synchronisation, the production Cloud Run service was re-verified from a fresh authenticated browser session.
+
+- Guided Sample loaded the complete three-obligation scenario without requiring a manual **Re-run analysis**.
+- Grounded Reasoning immediately reflected Rp2,600,000 in pre-salary obligations, Rp850,000 available cash, and the deterministic Rp1,750,000 funding gap.
+- Repayment prioritisation correctly identified Easycash as the earliest confirmed deadline, followed by BCA and AdaKami.
+- Financial summary cards remained readable at 100% browser zoom while preserving Rp2.60M and Rp8.50M two-decimal compact formatting.
+- The active Cloud Run revision continued to reference `GEMINI_API_KEY` through Google Cloud Secret Manager.
+- Firebase Authentication and user-isolated Firestore behaviour remained intact after the final frontend update.
+- The final verified frontend source was synchronised to the public repository `main` branch after production validation.
+
+No further production code changes were made after this verification.
+
+---
+
 ## 16. Judge-Facing Evidence Index
 
 All judge-facing screenshots are standardised to **1920 × 1080 (16:9)** and intentionally omit the browser URL where it is not needed.
@@ -487,6 +505,8 @@ A fresh Own Evidence session begins without assuming:
 - borrower-specific facts.
 
 The Guided Sample is activated only when explicitly selected.
+
+The current Guided Sample includes three repayment obligations and confirmed cash/salary timing so the end-to-end conversational and deterministic reasoning flow can be demonstrated safely without using real borrower data.
 
 ---
 
@@ -593,6 +613,8 @@ Required deployment controls:
 7. wait for the new revision to become Ready;
 8. verify intended traffic routing;
 9. run the targeted production smoke tests.
+
+The verified production deployment should not be republished or modified after the final judging-ready validation unless a critical production issue requires intervention.
 
 ---
 
