@@ -141,7 +141,7 @@ export const SituationColumn: React.FC<SituationColumnProps> = ({
           <span className="text-[11px] font-bold text-stone-400 uppercase tracking-wider mb-1 block leading-tight">
             Available Cash
           </span>
-          <div className="text-2xl lg:text-3xl font-light text-stone-900 font-mono tracking-tight whitespace-nowrap">
+          <div className="text-xl lg:text-2xl font-light text-stone-900 font-mono tracking-tight whitespace-nowrap">
             {availableCash !== null && availableCash !== undefined 
               ? `Rp${availableCash.toLocaleString('id-ID')}` 
               : 'N/A'}
@@ -156,7 +156,7 @@ export const SituationColumn: React.FC<SituationColumnProps> = ({
           <span className="text-[11px] font-bold text-amber-800 uppercase tracking-wider mb-1 block leading-tight">
             Due Before Salary
           </span>
-          <div className="text-2xl lg:text-3xl font-light text-amber-950 font-mono tracking-tight whitespace-nowrap">
+          <div className="text-xl lg:text-2xl font-light text-amber-950 font-mono tracking-tight whitespace-nowrap">
             {context.nextSalaryDate && obligations.length > 0 && dueBeforeSalary > 0 
               ? `Rp${(dueBeforeSalary / 1000000).toFixed(2)}M` 
               : 'N/A'}
@@ -175,7 +175,7 @@ export const SituationColumn: React.FC<SituationColumnProps> = ({
           <span className="text-[11px] font-bold text-stone-400 uppercase tracking-wider mb-1 block leading-tight">
             Upcoming Salary
           </span>
-          <div className="text-2xl lg:text-3xl font-light text-stone-900 font-mono tracking-tight whitespace-nowrap">
+          <div className="text-xl lg:text-2xl font-light text-stone-900 font-mono tracking-tight whitespace-nowrap">
             {nextSalaryAmount !== null && nextSalaryAmount !== undefined && context.nextSalaryDate !== null
               ? `Rp${(nextSalaryAmount / 1000000).toFixed(2)}M` 
               : 'N/A'}
