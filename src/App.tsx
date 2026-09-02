@@ -202,7 +202,7 @@ export default function App() {
       } else if (lower.includes('bca')) {
         updatePendingLenderRequest('BCA', 'conversation');
       } else if (lower.includes('easycash')) {
-        updatePendingLenderRequest('EasyCash', 'conversation');
+        updatePendingLenderRequest('Easycash', 'conversation');
       } else if (lower.includes('mandiri')) {
         updatePendingLenderRequest('Mandiri', 'conversation');
       }
@@ -412,7 +412,7 @@ export default function App() {
     setEvidenceList(SAMPLE_SCENARIO_EVIDENCE);
     setObligations(SAMPLE_SCENARIO_OBLIGATIONS);
     setAvailableCash(850000);
-    setNextSalaryDate('2026-08-28');
+    setNextSalaryDate('2026-09-28');
     setNextSalaryAmount(8500000);
     setChatMessages([
       {
@@ -423,9 +423,27 @@ export default function App() {
         retrievedSources: []
       }
     ]);
-    setTimeout(() => {
-      handleTriggerAnalysis();
-    }, 50);
+    setGeminiInsight(INITIAL_GEMINI_INSIGHT);
+
+    const sampleContext: FinancialContext = {
+      ...DEFAULT_FINANCIAL_CONTEXT,
+      userPersona: {
+        name: 'Ayu Putri',
+        email: 'ayu.putri@demo.fairassist.id',
+        occupation: 'Administrative Professional',
+        syntheticFlag: true,
+      },
+      evidenceList: SAMPLE_SCENARIO_EVIDENCE,
+      obligations: SAMPLE_SCENARIO_OBLIGATIONS,
+      availableCash: 850000,
+      nextSalaryDate: '2026-09-28',
+      nextSalaryAmount: 8500000,
+      essentialExpenses: null,
+      regulatorySources,
+      institutionPolicies,
+    };
+
+    handleTriggerAnalysis(sampleContext);
   };
 
   // Trigger Gemini Analysis on Server with explicit stage sequence
@@ -832,16 +850,16 @@ export default function App() {
         userConfirmedDetails: {
           ...item.userConfirmedDetails,
           category: 'Repayment-date approval confirmation',
-          institutionName: item.userConfirmedDetails?.institutionName || item.extractedDetails?.institutionName || 'EasyCash (PT Indonesia Fintopia Tech)',
+          institutionName: item.userConfirmedDetails?.institutionName || item.extractedDetails?.institutionName || 'Easycash (PT Indonesia Fintopia Technology)',
           amountDue: item.userConfirmedDetails?.amountDue || item.extractedDetails?.amountDue || 650000,
-          dueDate: item.userConfirmedDetails?.dueDate || item.extractedDetails?.dueDate || '2026-08-28',
+          dueDate: item.userConfirmedDetails?.dueDate || item.extractedDetails?.dueDate || '2026-09-28',
         },
         extractedDetails: {
           ...item.extractedDetails,
           category: 'Repayment-date approval confirmation',
-          institutionName: item.extractedDetails?.institutionName || 'EasyCash (PT Indonesia Fintopia Tech)',
+          institutionName: item.extractedDetails?.institutionName || 'Easycash (PT Indonesia Fintopia Technology)',
           amountDue: item.extractedDetails?.amountDue || 650000,
-          dueDate: item.extractedDetails?.dueDate || '2026-08-28',
+          dueDate: item.extractedDetails?.dueDate || '2026-09-28',
         }
       };
       (verifiedItem as any).isVerificationEvidence = true;
@@ -860,8 +878,8 @@ export default function App() {
       setEvidenceList(newEvidenceList);
       setIsVerificationUpload(false);
 
-      // Locate and update the EXISTING EasyCash obligation due date to 28 August 2026
-      const confirmedDueDate = item.userConfirmedDetails?.dueDate || item.extractedDetails?.dueDate || '2026-08-28';
+      // Locate and update the EXISTING Easycash obligation due date to 28 September 2026
+      const confirmedDueDate = item.userConfirmedDetails?.dueDate || item.extractedDetails?.dueDate || '2026-09-28';
       const formattedDueDate = formatStandardDate(confirmedDueDate);
       newObligations = newObligations.map((o) => {
         const normName = (o.institutionName || '').toLowerCase();
@@ -870,8 +888,8 @@ export default function App() {
             ...o,
             dueDate: confirmedDueDate,
             formattedDate: formattedDueDate,
-            originalDueDate: (o as any).originalDueDate || '2026-08-24',
-            notes: 'Repayment date shifted to 28 August 2026 based on verified lender approval evidence.'
+            originalDueDate: (o as any).originalDueDate || '2026-09-24',
+            notes: 'Repayment date shifted to 28 September 2026 based on verified lender approval evidence.'
           };
         }
         return o;
@@ -880,7 +898,7 @@ export default function App() {
 
       // Update ONLY the verified lender key in actionOutcomeTracking to LENDER_APPROVAL_VERIFIED
       const timestamp = new Date().toLocaleTimeString('id-ID');
-      const verifiedInstName = item.userConfirmedDetails?.institutionName || item.extractedDetails?.institutionName || 'EasyCash';
+      const verifiedInstName = item.userConfirmedDetails?.institutionName || item.extractedDetails?.institutionName || 'Easycash';
       const verifiedActionId = getExtensionActionId(verifiedInstName);
 
       setActionOutcomeTracking((prev) => {
@@ -910,7 +928,7 @@ export default function App() {
         id: `msg-confirm-verify-${Date.now()}`,
         sender: 'agent',
         timestamp: new Date().toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }),
-        text: `I've verified the EasyCash approval evidence. Your Rp650,000 repayment due date has been updated to 28 August 2026 to align with your salary date.`,
+        text: `I've verified the Easycash approval evidence. Your Rp650,000 repayment due date has been updated to 28 September 2026 to align with your salary date.`,
         retrievedSources: [
           {
             id: "POJK-40-2024",
@@ -940,13 +958,13 @@ export default function App() {
       setActivity({
         currentStage: 'ACT',
         stages: [
-          { stage: 'UNDERSTAND', status: 'completed', message: 'Parsed EasyCash approval evidence' },
+          { stage: 'UNDERSTAND', status: 'completed', message: 'Parsed Easycash approval evidence' },
           { stage: 'RETRIEVE', status: 'completed', message: 'Verified OJK repayment rescheduling rules' },
           { stage: 'VERIFY', status: 'completed', message: 'Verified lender approval documentation' },
-          { stage: 'REASON', status: 'completed', message: 'Updated obligation timeline to 28 August 2026' },
+          { stage: 'REASON', status: 'completed', message: 'Updated obligation timeline to 28 September 2026' },
           { stage: 'ACT', status: 'completed', message: 'Lender approval verified · Repayment shifted' }
         ],
-        activeStepDescription: 'Lender approval verified · EasyCash repayment shifted to 28 August 2026'
+        activeStepDescription: 'Lender approval verified · Easycash repayment shifted to 28 September 2026'
       });
 
       return;
@@ -974,7 +992,7 @@ export default function App() {
     const instName = item.userConfirmedDetails?.institutionName || item.extractedDetails?.institutionName || '';
     const prodName = item.userConfirmedDetails?.productName || item.extractedDetails?.productName || 'Loan Facility';
     const amount = item.userConfirmedDetails?.amountDue ?? item.extractedDetails?.amountDue;
-    const dueDate = item.userConfirmedDetails?.dueDate || item.extractedDetails?.dueDate || '2026-08-25';
+    const dueDate = item.userConfirmedDetails?.dueDate || item.extractedDetails?.dueDate || '2026-09-25';
 
     const itemCatLower = (item.category || '').toLowerCase();
     const itemTitleLower = (item.title || '').toLowerCase();
@@ -992,7 +1010,7 @@ export default function App() {
       const hasInstObl = newObligations.some((o) => o.institutionName.toLowerCase().includes(instName.toLowerCase()));
       if (!hasInstObl) {
         const isBank = instName.toLowerCase().includes('bca') || instName.toLowerCase().includes('bank') || instName.toLowerCase().includes('mandiri');
-        const formattedDate = dueDate === '2026-08-27' || dueDate === '27 August 2026' ? '27 August 2026' : (dueDate === '2026-08-25' ? '25 August 2026' : dueDate);
+        const formattedDate = dueDate === '2026-09-27' || dueDate === '27 September 2026' ? '27 September 2026' : (dueDate === '2026-09-25' ? '25 September 2026' : dueDate);
         const newObl: FinancialObligation = {
           id: `obl-${Date.now()}`,
           title: `${instName} ${prodName}`,
@@ -1021,7 +1039,7 @@ export default function App() {
       setPendingRequestedLender(reqInst);
 
       const formattedAmt = amount ? `Rp${Number(amount).toLocaleString('id-ID')}` : 'Rp750,000';
-      const formattedDueDate = dueDate === '2026-08-27' || dueDate === '27 August 2026' ? '27 August 2026' : (dueDate === '2026-08-25' ? '25 August 2026' : dueDate);
+      const formattedDueDate = dueDate === '2026-09-27' || dueDate === '27 September 2026' ? '27 September 2026' : (dueDate === '2026-09-25' ? '25 September 2026' : dueDate);
 
       const confirmAgentMsg: ChatMessage = {
         id: `msg-confirm-${Date.now()}`,
@@ -1098,13 +1116,13 @@ export default function App() {
 
       if (instName || isSlikOrReport || isSalaryOrIncome) {
         const formattedAmt = amount ? `Rp${Number(amount).toLocaleString('id-ID')}` : 'Rp650,000';
-        const formattedDueDate = dueDate === '2026-08-27' || dueDate === '27 August 2026' ? '27 August 2026' : (dueDate === '2026-08-25' ? '25 August 2026' : (dueDate === '2026-08-24' ? '24 August 2026' : dueDate));
+        const formattedDueDate = dueDate === '2026-09-27' || dueDate === '27 September 2026' ? '27 September 2026' : (dueDate === '2026-09-25' ? '25 September 2026' : (dueDate === '2026-09-24' ? '24 September 2026' : dueDate));
         
         let textContent = '';
         if (isSalaryOrIncome) {
           const salDetails = extractSalaryDetailsFromEvidence(item);
           const salAmt = salDetails.salaryAmount || amount || 8500000;
-          const salDate = salDetails.salaryDate || dueDate || '28 Aug 2026';
+          const salDate = salDetails.salaryDate || dueDate || '28 Sep 2026';
           const formattedSalAmt = `Rp${Number(salAmt).toLocaleString('id-ID')}`;
           
           const activeRepaymentsCount = newObligations.filter((o) => !o.isSalary && !(o.category || '').toLowerCase().includes('salary')).length;
@@ -1312,18 +1330,17 @@ export default function App() {
 
     setActivity((prev) => ({
       ...prev,
-      currentStage: 'ACT',
       stages: prev.stages.map((st) =>
         st.stage === 'ACT'
           ? {
               stage: 'ACT',
-              status: 'completed',
-              message: 'Borrower approved proposed action · added to Action Plan',
+              status: 'pending',
+              message: 'Proposed action approved · request preparation pending',
               timestamp,
             }
           : st
       ),
-      activeStepDescription: 'Proposed action approved · added to Action Plan',
+      activeStepDescription: 'Proposed action approved · request preparation pending',
     }));
 
     setTargetActionPlanActionId(action.id);
@@ -1422,11 +1439,6 @@ export default function App() {
       return;
     }
 
-    if (!approvedActionIds[action.id]?.isApproved) {
-      handleApproveAction(action);
-      return;
-    }
-
     const textToCheck = `${action.title} ${action.primaryActionButtonLabel} ${action.reason || ''}`.toLowerCase();
     let targetInst: string | null = null;
     if (textToCheck.includes('adakami')) {
@@ -1434,7 +1446,7 @@ export default function App() {
     } else if (textToCheck.includes('bca')) {
       targetInst = 'BCA';
     } else if (textToCheck.includes('easycash')) {
-      targetInst = 'EasyCash';
+      targetInst = 'Easycash';
     } else if (textToCheck.includes('mandiri')) {
       targetInst = 'Mandiri';
     }
@@ -1454,7 +1466,9 @@ export default function App() {
     } else if (action.actionCode === 'PREPARE_EXTENSION' || action.primaryActionButtonLabel.includes('View sent request') || action.primaryActionButtonLabel.includes('Action Plan')) {
       setTargetActionPlanActionId(action.id);
       setActiveTab('Action Plan');
-      setDraftOpenTrigger((prev) => prev + 1);
+      if (approvedActionIds[action.id]?.isApproved) {
+        setDraftOpenTrigger((prev) => prev + 1);
+      }
     } else {
       setSelectedLineageAction(action);
     }
@@ -1612,7 +1626,7 @@ export default function App() {
     const derivedActions: NextBestAction[] = [];
 
     if (portfolioFundingGap > 0) {
-      const formattedSalaryDate = nextSalaryDate ? formatBritishDate(nextSalaryDate) : '28 August 2026';
+      const formattedSalaryDate = nextSalaryDate ? formatBritishDate(nextSalaryDate) : '28 September 2026';
       const reasonText = `${earliestInst} is due first on ${earliestDueDate} for ${earliestAmtStr}. Ask ${earliestInst} whether this repayment can be moved to ${formattedSalaryDate}, your confirmed salary date. Any change requires ${earliestInst} confirmation. If the change is not approved, the original repayment remains due.`;
 
       const remainingPreSalaryRepayments = totalPreSalaryRepayments - earliestAmt;
@@ -1819,8 +1833,8 @@ export default function App() {
       if (outcome?.stage === 'LENDER_APPROVAL_VERIFIED') {
         return {
           ...normalizeAction(action),
-          title: `${lenderLabel} approval verified — repayment moved to 28 August 2026`,
-          reason: `Lender approval confirmed from verified evidence. Repayment date updated to 28 August 2026.`,
+          title: `${lenderLabel} approval verified — repayment moved to 28 September 2026`,
+          reason: `Lender approval confirmed from verified evidence. Repayment date updated to 28 September 2026.`,
           currentSourceStatus: 'Current' as const,
           requiresHumanAuthorisation: false,
           primaryActionButtonLabel: 'View verified pack',
@@ -1878,12 +1892,19 @@ export default function App() {
         return activity.activeStepDescription;
       }
     }
-    if (isUserActionExecuted) {
+    const isAnySent = isUserActionExecuted || Object.values(actionOutcomeTracking).some(
+      (o) => o?.stage === 'BORROWER_REPORTED_SENT' || o?.stage === 'AWAITING_LENDER_RESPONSE' || o?.stage === 'BORROWER_REPORTED_APPROVED_UNVERIFIED' || o?.stage === 'LENDER_APPROVAL_VERIFIED'
+    );
+    if (isAnySent) {
       return 'User action recorded · external outcome pending';
+    }
+    const isAnyReady = Object.values(readyRequestActionIds).some((r) => r?.isReady);
+    if (isAnyReady) {
+      return 'Request prepared · awaiting borrower to send externally';
     }
     const isAnyActionApproved = Object.values(approvedActionIds).some((a) => a.isApproved);
     if (isAnyActionApproved) {
-      return 'Proposed action approved · added to Action Plan';
+      return 'Proposed action approved · request preparation pending';
     }
     if (!hasAnyConfirmedContext) {
       return 'Waiting for your question or evidence';
@@ -1901,6 +1922,8 @@ export default function App() {
   }, [
     isAnalyzing,
     isUserActionExecuted,
+    actionOutcomeTracking,
+    readyRequestActionIds,
     approvedActionIds,
     activity.activeStepDescription,
     activity.stages,
@@ -1915,12 +1938,26 @@ export default function App() {
   const displayActivity = useMemo(() => {
     if (isAnalyzing) return activity;
 
-    const isAnyActionApproved = Object.values(approvedActionIds).some((a) => a.isApproved);
-    const isActCompleted = isUserActionExecuted || isAnyActionApproved || activity.stages.some((s) => s.stage === 'ACT' && s.status === 'completed');
+    const isAnySent = isUserActionExecuted || Object.values(actionOutcomeTracking).some(
+      (o) => o?.stage === 'BORROWER_REPORTED_SENT' || o?.stage === 'AWAITING_LENDER_RESPONSE' || o?.stage === 'BORROWER_REPORTED_APPROVED_UNVERIFIED' || o?.stage === 'LENDER_APPROVAL_VERIFIED'
+    );
+    const isActCompleted = isAnySent;
 
     let computedStages = activity.stages;
 
     if (hasAnyConfirmedContext) {
+      const isAnyActionApproved = Object.values(approvedActionIds).some((a) => a.isApproved);
+      const isAnyReady = Object.values(readyRequestActionIds).some((r) => r?.isReady);
+
+      let actMessage = 'Awaiting borrower approval';
+      if (isActCompleted) {
+        actMessage = 'User action recorded · external outcome pending';
+      } else if (isAnyReady) {
+        actMessage = 'Request prepared · awaiting borrower to send externally';
+      } else if (isAnyActionApproved) {
+        actMessage = 'Proposed action approved · request preparation pending';
+      }
+
       computedStages = [
         { stage: 'UNDERSTAND', status: 'completed', message: 'Parsed confirmed evidence & financial context' },
         { stage: 'RETRIEVE', status: 'completed', message: 'Retrieved matching OJK & BI regulatory clauses' },
@@ -1930,12 +1967,10 @@ export default function App() {
           ? {
               stage: 'ACT',
               status: 'completed',
-              message: isUserActionExecuted 
-                ? 'User action recorded · external outcome pending' 
-                : 'Borrower approved proposed action · added to Action Plan',
+              message: actMessage,
               timestamp: new Date().toLocaleTimeString('id-ID')
             }
-          : { stage: 'ACT', status: 'pending', message: 'Awaiting borrower approval' },
+          : { stage: 'ACT', status: 'pending', message: actMessage },
       ];
     } else {
       computedStages = [
@@ -1953,7 +1988,7 @@ export default function App() {
       activeStepDescription: canonicalStatusDescription,
       stages: computedStages,
     };
-  }, [activity, isAnalyzing, canonicalStatusDescription, hasAnyConfirmedContext, isUserActionExecuted, approvedActionIds]);
+  }, [activity, isAnalyzing, canonicalStatusDescription, hasAnyConfirmedContext, isUserActionExecuted, actionOutcomeTracking, readyRequestActionIds, approvedActionIds]);
 
   // Determine dynamic single primary next step
   const getDynamicNextStep = () => {
@@ -2172,7 +2207,6 @@ export default function App() {
                   const targetAmt = scenario.targetAmount || 0;
                   const origDate = scenario.originalDueDate || 'due date';
                   const propDate = scenario.proposedDueDate || 'salary date';
-                  const prodName = scenario.productName || 'repayment';
 
                   const actionTitle = `Ask ${targetInst} about moving the repayment date`;
                   const actionReason = `${targetInst} is due first on ${origDate} for Rp${targetAmt.toLocaleString('en-US')}. Ask ${targetInst} whether this repayment can be moved to ${propDate}, your confirmed salary date. Any change requires ${targetInst} confirmation. If the change is not approved, the original repayment remains due.`;
@@ -2185,9 +2219,8 @@ export default function App() {
 
                   const impactText = `If approved, pre-salary repayments decrease from Rp${totalPreSalaryRepayments.toLocaleString('en-US')} to Rp${remainingPreSalaryRepayments.toLocaleString('en-US')} and the repayment-only funding gap decreases from Rp${portfolioFundingGap.toLocaleString('en-US')} to Rp${remainingFundingGap.toLocaleString('en-US')}. Essential expenses are not included.`;
 
-                  const actionTimestamp = new Date().toLocaleTimeString('id-ID');
                   const newAction: NextBestAction = {
-                    id: `act-request-shift-${Date.now()}`,
+                    id: getExtensionActionId(targetInst),
                     category: 'DO TODAY',
                     priorityOrder: 1,
                     title: actionTitle,
@@ -2202,8 +2235,7 @@ export default function App() {
                     authorisingEntity: targetInst,
                     primaryActionButtonLabel: `Prepare ${targetInst} request`,
                     actionCode: 'PREPARE_EXTENSION',
-                    isApprovedByUser: true,
-                    approvedAt: actionTimestamp,
+                    isApprovedByUser: false,
                     lineage: {
                       evidenceProvided: [targetInst],
                       retrievedRules: scenario.isBank ? ['No verified institution-specific policy'] : ['POJK No. 40 Tahun 2024'],
@@ -2214,30 +2246,17 @@ export default function App() {
                     }
                   };
 
-                  setApprovedActionIds((prev) => ({
-                    ...prev,
-                    [newAction.id]: {
-                      isApproved: true,
-                      approvedAt: actionTimestamp,
-                    }
-                  }));
-
                   setNextBestActions((prev) => [newAction, ...prev.filter(a => a.id !== newAction.id && !a.title.includes('payment-date adjustment'))]);
 
                   setActivity((prev) => ({
                     ...prev,
-                    currentStage: 'ACT',
-                    stages: prev.stages.map((st) => 
-                      st.stage === 'ACT'
-                        ? { stage: 'ACT', status: 'completed', message: 'Borrower approved proposed action · added to Action Plan', timestamp: actionTimestamp }
-                        : st
-                    ),
-                    activeStepDescription: `Action Plan updated · ${targetInst} request approved`
+                    activeStepDescription: 'Action Plan updated · Awaiting borrower approval'
                   }));
 
+                  setTargetActionPlanActionId(newAction.id);
                   setActiveTab('Action Plan');
                 }}
-                addedToPlan={nextBestActions.some(a => a.actionCode === 'PREPARE_EXTENSION' || a.title.includes('payment-date adjustment'))}
+                addedToPlan={nextBestActions.some(a => a.actionCode === 'PREPARE_EXTENSION' || a.title.includes('payment-date adjustment')) || effectiveNextBestActions.some(a => a.actionCode === 'PREPARE_EXTENSION')}
               />
             )}
 
